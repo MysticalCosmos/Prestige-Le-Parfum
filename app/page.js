@@ -481,6 +481,66 @@ export default function PrestigeLeParfum() {
           .plp-nav-links{display:none;}
         }
 
+        /* MOBILE (phones and small tablets). Desktop layout is unchanged. */
+        .plp-root{-webkit-tap-highlight-color:transparent;}
+        .plp-root a,.plp-root button{touch-action:manipulation;}
+        .plp-header{padding-top:env(safe-area-inset-top, 0px);}
+        .plp-footer{padding-bottom:calc(30px + env(safe-area-inset-bottom, 0px));}
+        .plp-cart-foot{padding-bottom:calc(22px + env(safe-area-inset-bottom, 0px));}
+
+        @media (max-width:980px){
+          /* keep the menu: becomes a swipeable row under the logo instead of disappearing */
+          .plp-nav{flex-wrap:wrap;}
+          .plp-nav-links{
+            display:flex; order:3; width:100%; gap:26px; margin-top:12px; font-size:12px;
+            overflow-x:auto; white-space:nowrap; scrollbar-width:none; -webkit-overflow-scrolling:touch;
+          }
+          .plp-nav-links::-webkit-scrollbar{display:none;}
+        }
+
+        @media (max-width:600px){
+          .plp-root{overflow-x:clip;}
+          .plp-nav{padding:12px 16px;}
+          .plp-brand img{height:32px;}
+          .plp-brand-name{font-size:16px;}
+          .plp-nav-icons{gap:14px; font-size:13px;}
+          .plp-nav-icons a{padding:6px 0;}
+
+          .plp-hero{padding:52px 20px 56px;}
+          .plp-hero h1{font-size:40px;}
+          .plp-hero p{font-size:15px; margin-bottom:28px;}
+          .plp-hero-visual{height:260px;}
+          .plp-hero-plate{width:250px; height:250px;}
+          .plp-btn-row{flex-direction:column; align-items:stretch; gap:12px; text-align:center;}
+          .plp-btn-row a{width:auto;}
+          .plp-strip{padding:14px 20px;}
+
+          .plp-section{padding:56px 20px;}
+          .plp-section-head{flex-direction:column; align-items:flex-start; gap:14px; margin-bottom:30px;}
+          .plp-section-head h2{font-size:30px;}
+          .plp-grid{grid-template-columns:1fr; gap:20px;}
+          .plp-card-media{height:200px;}
+          .plp-split-text{padding:44px 24px;}
+          .plp-split-text h2{font-size:28px;}
+          .plp-news{padding:56px 20px;}
+          .plp-news h2{font-size:28px;}
+          .plp-news-form input{font-size:16px;}
+          .plp-footer{padding-top:48px; padding-left:20px; padding-right:20px;}
+          .plp-foot-inner{grid-template-columns:1fr; gap:28px;}
+          .plp-foot-bottom{flex-direction:column; gap:10px; text-align:center;}
+
+          /* popups, bag and toast */
+          .plp-modal{padding:30px 20px; max-height:88dvh;}
+          .plp-modal-close{top:8px; right:8px; width:44px; height:44px; font-size:26px;}
+          .plp-field input{font-size:16px; padding:14px;}  /* 16px stops iPhones zooming in on focus */
+          .plp-cart-drawer{height:100dvh;}
+          .plp-cart-head{padding:18px 20px;}
+          .plp-cart-items{padding:8px 20px;}
+          .plp-cart-foot{padding-left:20px; padding-right:20px;}
+          .plp-qty-btn{width:34px; height:34px; font-size:16px;}
+          .plp-toast{max-width:calc(100% - 32px); text-align:center; padding:12px 18px; bottom:calc(20px + env(safe-area-inset-bottom, 0px));}
+        }
+
         /* MODALS */
         .plp-overlay{
           position:fixed; inset:0; background:rgba(10,10,9,0.72); backdrop-filter:blur(3px);

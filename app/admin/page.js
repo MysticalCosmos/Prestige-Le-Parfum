@@ -66,12 +66,18 @@ export default function AdminPage() {
         .adm-actions a:hover,.adm-actions button:hover{border-color:var(--gold); color:var(--gold-soft);}
         .adm-msg{color:var(--cream-dim); font-size:14px; padding:40px 0;}
         .adm-scroll{overflow-x:auto;}
-        .adm table{width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--gold-line);}
+        .adm table{width:100%; min-width:720px; border-collapse:collapse; background:var(--panel); border:1px solid var(--gold-line);}
         .adm th{text-align:left; font-size:10px; letter-spacing:0.2em; text-transform:uppercase; color:var(--gold-soft); font-weight:400; padding:14px 16px; border-bottom:1px solid var(--gold-line);}
         .adm td{font-size:13px; color:var(--cream-dim); padding:14px 16px; border-bottom:1px solid rgba(201,162,75,0.15); vertical-align:top;}
         .adm td.no{font-family:'Cormorant Garamond',serif; font-size:18px; color:var(--cream);}
         .adm select{background:var(--ink); color:var(--cream); border:1px solid var(--gold-line); padding:6px 10px; font-family:'Jost',sans-serif; font-size:13px;}
         .adm td.total{font-family:'Cormorant Garamond',serif; font-size:18px; color:var(--gold-soft);}
+        @media (max-width:600px){
+          .adm{padding:20px 16px;}
+          .adm-head{flex-direction:column; align-items:flex-start; gap:16px;}
+          .adm h1{font-size:30px;}
+          .adm-actions{flex-wrap:wrap;}
+        }
       `}</style>
       <div className="adm-wrap">
         <div className="adm-head">
