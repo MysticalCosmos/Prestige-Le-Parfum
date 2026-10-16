@@ -3,6 +3,10 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "../lib/supabase";
 
+const MAX_PER_ITEM = 5; // bottles of the same fragrance per order
+const MAX_PER_ORDER = 10; // bottles in total per order
+const STATUS_LABEL = { pending: "Order received", paid: "Paid", shipped: "Shipped", delivered: "Delivered", cancelled: "Cancelled" };
+
 /* ---------- Reusable bottle SVG (used in hero + product cards) ---------- */
 function BottleSVG({ style }) {
   return (
@@ -117,6 +121,15 @@ export default function PrestigeLeParfum() {
 
   /* ---------------- Cart ---------------- */
   const addToCart = (name, price) => {
+    const existing = cart.find((i) => i.name === name);
+    if (existing && existing.qty >= MAX_PER_ITEM) {
+      showToast(`Limit of ${MAX_PER_ITEM} per fragrance`);
+      return;
+    }
+    if (cartCount >= MAX_PER_ORDER) {
+      showToast(`Limit of ${MAX_PER_ORDER} bottles per order`);
+      return;
+    }
     setCart((prev) => {
       const existing = prev.find((i) => i.name === name);
       if (existing) {
@@ -128,6 +141,17 @@ export default function PrestigeLeParfum() {
   };
 
   const changeQty = (name, delta) => {
+    if (delta > 0) {
+      const item = cart.find((i) => i.name === name);
+      if (item && item.qty >= MAX_PER_ITEM) {
+        showToast(`Limit of ${MAX_PER_ITEM} per fragrance`);
+        return;
+      }
+      if (cartCount >= MAX_PER_ORDER) {
+        showToast(`Limit of ${MAX_PER_ORDER} bottles per order`);
+        return;
+      }
+    }
     setCart((prev) =>
       prev
         .map((i) => (i.name === name ? { ...i, qty: i.qty + delta } : i))
@@ -169,7 +193,7 @@ export default function PrestigeLeParfum() {
     setCartOpen(false);
     showInfo(
       "Order confirmed",
-      `Thank you! Your order ${data.order_no} has been placed. Total: $${data.total}. (Payment is simulated.)`
+      `Thank you! Your order ${data.order_no} has been placed. Total: $${data.total}.`
     );
   };
 
@@ -242,10 +266,23 @@ export default function PrestigeLeParfum() {
     showToast("Signed out");
   };
 
-  const handleTracking = (e) => {
-    e.preventDefault();
-    setTrackingMsg("This is a preview — order tracking will be connected to live shipping data soon.");
-  };
+  /* ---------------- Order tracking: load the customer's latest orders when the popup opens ---------------- */
+  const [trackingOrders, setTrackingOrders] = useState(null); // null = loading
+  useEffect(() => {
+    if (openModalId !== "tracking" || !user) return;
+    setTrackingOrders(null);
+    setTrackingMsg("");
+    supabase
+      .from("orders")
+      .select("order_no, status, total, created_at")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(5)
+      .then(({ data, error }) => {
+        if (error) setTrackingMsg("We couldn't load your orders. Please try again.");
+        setTrackingOrders(error ? [] : data);
+      });
+  }, [openModalId, user]);
 
   const handleNewsletter = async (e) => {
     e.preventDefault();
@@ -533,7 +570,7 @@ export default function PrestigeLeParfum() {
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>Create account</h3>
-            <div className="plp-sub">Join to track orders and save your favorites.</div>
+            <div className="plp-sub">Join to place and track your orders.</div>
             <form onSubmit={handleCreateAccount}>
               <div className="plp-field">
                 <label>Full name</label>
@@ -562,19 +599,25 @@ export default function PrestigeLeParfum() {
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>Track your order</h3>
-            <div className="plp-sub">Enter your order number and email to see the latest status.</div>
-            <form onSubmit={handleTracking}>
-              <div className="plp-field">
-                <label>Order number</label>
-                <input type="text" required placeholder="PLP-000000" />
-              </div>
-              <div className="plp-field">
-                <label>Email</label>
-                <input type="email" required placeholder="name@email.com" />
-              </div>
-              <button type="submit" className="plp-btn" style={{ width: "100%" }}>Track order</button>
-              {trackingMsg && <div className="plp-modal-msg">{trackingMsg}</div>}
-            </form>
+            <div className="plp-sub">Your five most recent orders and their status.</div>
+            {!user ? (
+              <>
+                <div className="plp-modal-msg">Please sign in to see your orders.</div>
+                <button className="plp-btn" style={{ width: "100%", marginTop: 16 }} onClick={() => openModal("signin")}>
+                  Sign in
+                </button>
+              </>
+            ) : trackingOrders === null ? (
+              <div className="plp-modal-msg">Loading…</div>
+            ) : trackingOrders.length === 0 ? (
+              <div className="plp-modal-msg">{trackingMsg || "You haven't placed an order yet."}</div>
+            ) : (
+              trackingOrders.map((o) => (
+                <div className="plp-modal-msg" key={o.order_no}>
+                  <strong>{o.order_no}</strong> — {STATUS_LABEL[o.status] || o.status} · {new Date(o.created_at).toLocaleDateString()} · ${o.total}
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}
@@ -696,7 +739,7 @@ export default function PrestigeLeParfum() {
           <a
             className="plp-view-all"
             onClick={() =>
-              showInfo("All products", "Our full catalog is being finished for this preview — check back soon for the complete range.")
+              showInfo("Coming soon", "The full collection is on its way. Check back soon.")
             }
           >
             View all products
@@ -738,7 +781,7 @@ export default function PrestigeLeParfum() {
               className="plp-btn-ghost"
               style={{ width: "fit-content" }}
               onClick={() =>
-                showInfo("Our story", "Our full brand story and atelier film are being prepared for this preview — thank you for your patience.")
+                showInfo("Coming soon", "Our full story is on its way. Check back soon.")
               }
             >
               Discover our story
@@ -756,7 +799,7 @@ export default function PrestigeLeParfum() {
           </div>
           <a
             className="plp-view-all"
-            onClick={() => showInfo("Journal", "Our full journal archive is coming soon — new stories are published monthly.")}
+            onClick={() => showInfo("Coming soon", "The journal is on its way. Check back soon.")}
           >
             Read the journal
           </a>
@@ -810,21 +853,21 @@ export default function PrestigeLeParfum() {
             <h4>Shop</h4>
             <a onClick={() => scrollToSection("productsSection")}>All products</a>
             <a onClick={() => scrollToSection("productsSection")}>Best sellers</a>
-            <a onClick={() => showInfo("New arrivals", "New arrivals will be added to this preview as they launch.")}>New arrivals</a>
-            <a onClick={() => showInfo("Gift sets", "Gift sets are being curated for this preview — check back soon.")}>Gift sets</a>
+            <a onClick={() => showInfo("Coming soon", "New arrivals will appear here as they launch.")}>New arrivals</a>
+            <a onClick={() => showInfo("Coming soon", "Gift sets are being curated. Check back soon.")}>Gift sets</a>
           </div>
           <div className="plp-foot-col">
             <h4>Support</h4>
             <a onClick={() => openModal("tracking")}>Order tracking</a>
             <a onClick={() => showInfo("Shipping and returns", "Free shipping on orders over $120. Returns are accepted within 30 days of delivery in original condition.")}>Shipping and returns</a>
             <a onClick={() => showInfo("Contact us", "Reach us any time at hello@prestigeleparfum.example — we usually reply within one business day.")}>Contact us</a>
-            <a onClick={() => showInfo("FAQ", "Frequently asked questions are being compiled for this preview.")}>FAQ</a>
+            <a onClick={() => showInfo("Coming soon", "Our FAQ is being compiled. Check back soon.")}>FAQ</a>
           </div>
           <div className="plp-foot-col">
             <h4>Account</h4>
             <a onClick={() => openModal("signin")}>Sign in</a>
             <a onClick={() => openModal("create")}>Create account</a>
-            <a onClick={() => showInfo("My orders", "Sign in to view your order history.")}>My orders</a>
+            <a onClick={() => openModal("tracking")}>My orders</a>
             <a onClick={() => showInfo("Wishlist", "Sign in to view and manage your wishlist.")}>Wishlist</a>
           </div>
         </div>

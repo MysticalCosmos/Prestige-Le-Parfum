@@ -28,6 +28,19 @@ export default function AdminPage() {
 
   useEffect(() => { load(); }, []);
 
+  const changeStatus = async (orderNo, newStatus) => {
+    const { data, error } = await supabase
+      .from("orders")
+      .update({ status: newStatus })
+      .eq("order_no", orderNo)
+      .select("order_no");
+    if (error || !data || data.length === 0) {
+      alert("Could not update the status: " + (error?.message || "no permission. Did you run tracking.sql?"));
+      return;
+    }
+    setOrders((list) => list.map((o) => (o.order_no === orderNo ? { ...o, status: newStatus } : o)));
+  };
+
   const signOut = async () => { await supabase.auth.signOut(); load(); };
 
   const messages = {
@@ -57,6 +70,7 @@ export default function AdminPage() {
         .adm th{text-align:left; font-size:10px; letter-spacing:0.2em; text-transform:uppercase; color:var(--gold-soft); font-weight:400; padding:14px 16px; border-bottom:1px solid var(--gold-line);}
         .adm td{font-size:13px; color:var(--cream-dim); padding:14px 16px; border-bottom:1px solid rgba(201,162,75,0.15); vertical-align:top;}
         .adm td.no{font-family:'Cormorant Garamond',serif; font-size:18px; color:var(--cream);}
+        .adm select{background:var(--ink); color:var(--cream); border:1px solid var(--gold-line); padding:6px 10px; font-family:'Jost',sans-serif; font-size:13px;}
         .adm td.total{font-family:'Cormorant Garamond',serif; font-size:18px; color:var(--gold-soft);}
       `}</style>
       <div className="adm-wrap">
@@ -89,7 +103,13 @@ export default function AdminPage() {
                     <td>{o.profiles?.full_name || "—"}<br />{o.profiles?.email}</td>
                     <td>{o.order_items.map((i) => `${i.product_name} × ${i.qty}`).join(", ")}</td>
                     <td className="total">${o.total}</td>
-                    <td>{o.status}</td>
+                    <td>
+                      <select value={o.status} onChange={(e) => changeStatus(o.order_no, e.target.value)}>
+                        {[...new Set(["pending", "shipped", "delivered", o.status])].map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </td>
                     <td>{new Date(o.created_at).toLocaleString()}</td>
                   </tr>
                 ))}
