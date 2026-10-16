@@ -68,7 +68,7 @@ const BLOG_POSTS = [
 
 const STRIP_ITEMS = [
   "Complimentary gift wrapping",
-  "Secure checkout via Stripe",
+  "Secure checkout",
   "Free shipping over $120",
   "30-day returns",
 ];
@@ -88,6 +88,7 @@ export default function PrestigeLeParfum() {
   const [user, setUser] = useState(null); // signed-in Supabase user (or null)
   const [role, setRole] = useState(null); // 'customer' | 'admin'
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false); // mobile menu
 
   /* ---------------- Auth: keep `user` and `role` in sync with Supabase ---------------- */
   useEffect(() => {
@@ -394,6 +395,12 @@ export default function PrestigeLeParfum() {
         /* STRIP */
         .plp-strip{ border-bottom:1px solid var(--gold-line); padding:16px 40px; overflow:hidden; white-space:nowrap; background:var(--panel); }
         .plp-strip-track{display:inline-flex; gap:60px; font-size:11px; letter-spacing:0.28em; text-transform:uppercase; color:var(--stone);}
+        /* scrolling ticker: 4 copies of the text, slides left by half (= 2 copies) and loops seamlessly */
+        .plp-strip{-webkit-mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent); mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent);}
+        .plp-strip-track{padding-right:60px; animation:plp-marquee 40s linear infinite; will-change:transform;}
+        .plp-strip:hover .plp-strip-track{animation-play-state:paused;}
+        @keyframes plp-marquee{from{transform:translateX(0);} to{transform:translateX(-50%);}}
+        @media (prefers-reduced-motion:reduce){.plp-strip-track{animation:none;}}
 
         /* SECTIONS */
         .plp-section{padding:100px 40px;}
@@ -488,14 +495,21 @@ export default function PrestigeLeParfum() {
         .plp-footer{padding-bottom:calc(30px + env(safe-area-inset-bottom, 0px));}
         .plp-cart-foot{padding-bottom:calc(22px + env(safe-area-inset-bottom, 0px));}
 
+        /* menu button (phones and tablets only) */
+        .plp-menu-btn{display:none; background:none; border:none; cursor:pointer; padding:12px 6px; margin-right:-6px;}
+        .plp-menu-btn span{display:block; width:22px; height:1.5px; background:var(--cream); margin:5px 0; transition:transform .25s, opacity .25s;}
+        .plp-menu-btn.open span:nth-child(1){transform:translateY(6.5px) rotate(45deg);}
+        .plp-menu-btn.open span:nth-child(2){opacity:0;}
+        .plp-menu-btn.open span:nth-child(3){transform:translateY(-6.5px) rotate(-45deg);}
         @media (max-width:980px){
-          /* keep the menu: becomes a swipeable row under the logo instead of disappearing */
           .plp-nav{flex-wrap:wrap;}
+          .plp-menu-btn{display:block;}
           .plp-nav-links{
-            display:flex; order:3; width:100%; gap:26px; margin-top:12px; font-size:12px;
-            overflow-x:auto; white-space:nowrap; scrollbar-width:none; -webkit-overflow-scrolling:touch;
+            display:none; order:3; width:100%; flex-direction:column; gap:0; margin-top:10px;
+            border-top:1px solid var(--gold-line); font-size:13px;
           }
-          .plp-nav-links::-webkit-scrollbar{display:none;}
+          .plp-nav-links.open{display:flex;}
+          .plp-nav-links a{padding:15px 2px; border-bottom:1px solid rgba(201,162,75,0.15);}
         }
 
         @media (max-width:600px){
@@ -739,7 +753,7 @@ export default function PrestigeLeParfum() {
             <img src={crest} alt="Prestige Le Parfum" />
             <div className="plp-brand-name">PRESTIGE<span>LE PARFUM</span></div>
           </div>
-          <div className="plp-nav-links">
+          <div className={"plp-nav-links" + (menuOpen ? " open" : "")} onClick={() => setMenuOpen(false)}>
             <a onClick={() => scrollToSection("top")}>Home</a>
             <a onClick={() => scrollToSection("productsSection")}>Products</a>
             <a onClick={() => scrollToSection("storySection")}>Collections</a>
@@ -756,6 +770,14 @@ export default function PrestigeLeParfum() {
               <a onClick={() => openModal("signin")}>Sign in</a>
             )}
             <a onClick={() => setCartOpen(true)}>Bag <span className="plp-cart-count">{cartCount}</span></a>
+            <button
+              className={"plp-menu-btn" + (menuOpen ? " open" : "")}
+              aria-label="Menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((o) => !o)}
+            >
+              <span /><span /><span />
+            </button>
           </div>
         </nav>
       </header>
@@ -783,7 +805,7 @@ export default function PrestigeLeParfum() {
       {/* ---------- Strip ---------- */}
       <div className="plp-strip">
         <div className="plp-strip-track">
-          {[...STRIP_ITEMS, ...STRIP_ITEMS].map((t, i) => (
+          {[...STRIP_ITEMS, ...STRIP_ITEMS, ...STRIP_ITEMS, ...STRIP_ITEMS].map((t, i) => (
             <span key={i}>{t}</span>
           ))}
         </div>
@@ -933,7 +955,6 @@ export default function PrestigeLeParfum() {
         </div>
         <div className="plp-foot-bottom">
           <span>&copy; 2026 Prestige Le Parfum. All rights reserved.</span>
-          <span>Payments secured by Stripe</span>
         </div>
       </footer>
     </div>
