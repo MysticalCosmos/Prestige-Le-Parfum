@@ -1,0 +1,838 @@
+"use client";
+
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { supabase } from "../lib/supabase";
+
+/* ---------- Reusable bottle SVG (used in hero + product cards) ---------- */
+function BottleSVG({ style }) {
+  return (
+    <svg viewBox="0 0 100 140" fill="none" xmlns="http://www.w3.org/2000/svg" style={style}>
+      <path
+        d="M40 30 L60 30 L60 42 L68 48 L68 60 L74 55 L82 58 L82 68 L74 66 L68 62 L68 130 Q68 138 60 138 L40 138 Q32 138 32 130 L32 62 L26 66 L18 68 L18 58 L26 55 L32 60 L32 48 L40 42 Z"
+        stroke="#c9a24b"
+        strokeWidth="1.4"
+      />
+      <path d="M40 62 L50 130 L60 62" stroke="#c9a24b" strokeWidth="1" opacity="0.55" />
+    </svg>
+  );
+}
+
+function CrestDataUri() {
+  return (
+    "data:image/svg+xml;utf8," +
+    encodeURIComponent(
+      `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='47' fill='none' stroke='#c9a24b' stroke-width='2'/><text x='50' y='63' font-family='Georgia,serif' font-size='46' fill='#c9a24b' text-anchor='middle'>P</text></svg>`
+    )
+  );
+}
+
+const PRODUCTS = [
+  { name: "Noir Royal", badge: "Best seller", notes: "Amber, oud, black pepper", price: 168 },
+  { name: "Velours d'Or", badge: null, notes: "Bergamot, iris, sandalwood", price: 154 },
+  { name: "Ambre Imperial", badge: "Limited", notes: "Vanilla, cedar, saffron", price: 192 },
+  { name: "Soie Blanche", badge: null, notes: "Jasmine, musk, white tea", price: 146 },
+];
+
+const BLOG_POSTS = [
+  {
+    tag: "Fragrance guide",
+    title: "How to choose a signature scent",
+    excerpt:
+      "Notes, layering, and longevity — a short guide to finding the fragrance that becomes yours.",
+    infoTitle: "How to choose a signature scent",
+    infoBody:
+      "Notes, layering, and longevity — a short guide to finding the fragrance that becomes yours. Full article coming soon.",
+  },
+  {
+    tag: "Behind the house",
+    title: "Inside our atelier in Grasse",
+    excerpt: "A look at how each Prestige Le Parfum batch is blended, rested, and bottled by hand.",
+    infoTitle: "Inside our atelier in Grasse",
+    infoBody:
+      "A look at how each Prestige Le Parfum batch is blended, rested, and bottled by hand. Full article coming soon.",
+  },
+  {
+    tag: "Gifting",
+    title: "The art of gifting fragrance",
+    excerpt:
+      "Our edit of scents to give this season, and how to pair them with the right occasion.",
+    infoTitle: "The art of gifting fragrance",
+    infoBody:
+      "Our edit of scents to give this season, and how to pair them with the right occasion. Full article coming soon.",
+  },
+];
+
+const STRIP_ITEMS = [
+  "Complimentary gift wrapping",
+  "Secure checkout via Stripe",
+  "Free shipping over $120",
+  "30-day returns",
+];
+
+export default function PrestigeLeParfum() {
+  const [cart, setCart] = useState([]); // { name, price, qty }
+  const [cartOpen, setCartOpen] = useState(false);
+  const [openModalId, setOpenModalId] = useState(null); // 'signin' | 'create' | 'tracking' | 'info' | null
+  const [info, setInfo] = useState({ title: "Notice", body: "Content coming soon." });
+  const [signinMsg, setSigninMsg] = useState("");
+  const [createMsg, setCreateMsg] = useState("");
+  const [trackingMsg, setTrackingMsg] = useState("");
+  const [newsletterMsg, setNewsletterMsg] = useState("");
+  const [newsletterEmail, setNewsletterEmail] = useState("");
+  const [newsletterLoading, setNewsletterLoading] = useState(false);
+  const [newsletterError, setNewsletterError] = useState(false);
+  const [user, setUser] = useState(null); // signed-in Supabase user (or null)
+  const [role, setRole] = useState(null); // 'customer' | 'admin'
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+
+  /* ---------------- Auth: keep `user` and `role` in sync with Supabase ---------------- */
+  useEffect(() => {
+    const loadRole = async (u) => {
+      if (!u) return setRole(null);
+      const { data } = await supabase.from("profiles").select("role").eq("id", u.id).single();
+      setRole(data?.role ?? "customer");
+    };
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setTimeout(() => loadRole(session?.user), 0); // setTimeout avoids a known Supabase deadlock
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+  const [toast, setToast] = useState({ show: false, text: "" });
+  const toastTimer = useRef(null);
+
+  const sectionRefs = {
+    top: useRef(null),
+    productsSection: useRef(null),
+    storySection: useRef(null),
+    blogSection: useRef(null),
+  };
+
+  /* ---------------- Toast ---------------- */
+  const showToast = useCallback((text) => {
+    setToast({ show: true, text });
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast({ show: false, text }), 2200);
+  }, []);
+
+  /* ---------------- Cart ---------------- */
+  const addToCart = (name, price) => {
+    setCart((prev) => {
+      const existing = prev.find((i) => i.name === name);
+      if (existing) {
+        return prev.map((i) => (i.name === name ? { ...i, qty: i.qty + 1 } : i));
+      }
+      return [...prev, { name, price, qty: 1 }];
+    });
+    showToast(`${name} added to your bag`);
+  };
+
+  const changeQty = (name, delta) => {
+    setCart((prev) =>
+      prev
+        .map((i) => (i.name === name ? { ...i, qty: i.qty + delta } : i))
+        .filter((i) => i.qty > 0)
+    );
+  };
+
+  const removeFromCart = (name) => {
+    setCart((prev) => prev.filter((i) => i.name !== name));
+  };
+
+  const cartCount = cart.reduce((sum, i) => sum + i.qty, 0);
+  const cartSubtotal = cart.reduce((sum, i) => sum + i.qty * i.price, 0);
+
+  const handleCheckout = async (e) => {
+    e.preventDefault();
+    if (checkoutLoading) return;
+    if (cart.length === 0) {
+      showToast("Your bag is empty");
+      return;
+    }
+    if (!user) {
+      setCartOpen(false);
+      openModal("signin");
+      showToast("Please sign in to check out");
+      return;
+    }
+    setCheckoutLoading(true);
+    // Only names + quantities are sent; the database looks up the real prices.
+    const { data, error } = await supabase.rpc("place_order", {
+      p_items: cart.map((i) => ({ name: i.name, qty: i.qty })),
+    });
+    setCheckoutLoading(false);
+    if (error) {
+      showToast(error.message);
+      return;
+    }
+    setCart([]);
+    setCartOpen(false);
+    showInfo(
+      "Order confirmed",
+      `Thank you! Your order ${data.order_no} has been placed. Total: $${data.total}. (Payment is simulated.)`
+    );
+  };
+
+  /* ---------------- Modals ---------------- */
+  const openModal = (id) => setOpenModalId(id);
+  const closeModal = () => setOpenModalId(null);
+  const switchModal = (toId) => setOpenModalId(toId);
+  const showInfo = (title, body) => {
+    setInfo({ title, body });
+    setOpenModalId("info");
+  };
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        setOpenModalId(null);
+        setCartOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  const handleSignin = async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const [email, password] = [...form.querySelectorAll("input")].map((i) => i.value);
+    setSigninMsg("Signing in…");
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      setSigninMsg(error.message);
+      return;
+    }
+    setSigninMsg("Signed in — welcome back.");
+    setTimeout(() => {
+      closeModal();
+      setSigninMsg("");
+      form.reset();
+    }, 900);
+  };
+
+  const handleCreateAccount = async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const [fullName, email, password] = [...form.querySelectorAll("input")].map((i) => i.value);
+    setCreateMsg("Creating your account…");
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { data: { full_name: fullName } },
+    });
+    if (error) {
+      setCreateMsg(error.message);
+      return;
+    }
+    if (!data.session) {
+      setCreateMsg("Almost there — check your email to confirm your account.");
+      return;
+    }
+    setCreateMsg("Account created — welcome to the house.");
+    setTimeout(() => {
+      closeModal();
+      setCreateMsg("");
+      form.reset();
+    }, 900);
+  };
+
+  const handleSignout = async () => {
+    await supabase.auth.signOut();
+    showToast("Signed out");
+  };
+
+  const handleTracking = (e) => {
+    e.preventDefault();
+    setTrackingMsg("This is a preview — order tracking will be connected to live shipping data soon.");
+  };
+
+  const handleNewsletter = async (e) => {
+    e.preventDefault();
+    setNewsletterLoading(true);
+    setNewsletterError(false);
+    setNewsletterMsg("");
+    try {
+      const res = await fetch("/api/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: newsletterEmail }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Something went wrong. Please try again.");
+      // success: text comes from the row Supabase actually saved
+      setNewsletterMsg(
+        data.already_subscribed
+          ? `${data.email} is already on our list.`
+          : `Thank you — ${data.email} has been added to our list.`
+      );
+      setNewsletterEmail("");
+    } catch (err) {
+      setNewsletterError(true);
+      setNewsletterMsg(
+        err instanceof TypeError
+          ? "Network error — please check your connection and try again."
+          : err.message
+      );
+    } finally {
+      setNewsletterLoading(false);
+    }
+  };
+
+  /* ---------------- Nav scroll ---------------- */
+  const scrollToSection = (id) => {
+    sectionRefs[id]?.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const crest = CrestDataUri();
+
+  return (
+    <div className="plp-root">
+      <style>{`
+        .plp-root{
+          --ink:#121210; --panel:#1a1a17; --panel2:#201f1b;
+          --gold:#c9a24b; --gold-soft:#d9be7f; --gold-line:rgba(201,162,75,0.35);
+          --cream:#f3ede1; --cream-dim:#c9c3b4; --stone:#8f8a7c;
+          background:var(--ink); color:var(--cream);
+          font-family:'Jost',sans-serif; font-weight:300;
+          -webkit-font-smoothing:antialiased;
+        }
+        .plp-root *{box-sizing:border-box;}
+        .plp-root h1,.plp-root h2,.plp-root h3,.plp-root .serif{ font-family:'Cormorant Garamond', serif; font-weight:500; letter-spacing:0.01em; }
+        .plp-root .eyebrow{
+          font-family:'Jost',sans-serif; font-size:11px; letter-spacing:0.35em; text-transform:uppercase;
+          color:var(--gold-soft); font-weight:400;
+        }
+        .plp-root a{color:inherit; text-decoration:none;}
+
+        /* NAV */
+        .plp-header{ position:sticky; top:0; z-index:50; background:rgba(18,18,16,0.92); backdrop-filter:blur(6px); border-bottom:1px solid var(--gold-line); }
+        .plp-nav{ display:flex; align-items:center; justify-content:space-between; padding:18px 40px; max-width:1180px; margin:0 auto; }
+        .plp-brand{display:flex; align-items:center; gap:12px;}
+        .plp-brand img{height:40px; width:auto; display:block;}
+        .plp-brand-name{font-family:'Cormorant Garamond',serif; font-size:20px; letter-spacing:0.12em; color:var(--cream);}
+        .plp-brand-name span{display:block; font-family:'Jost',sans-serif; font-size:9px; letter-spacing:0.3em; color:var(--gold-soft); margin-top:2px;}
+        .plp-nav-links{display:flex; gap:38px; font-size:13px; letter-spacing:0.08em; text-transform:uppercase;}
+        .plp-nav-links a{color:var(--cream-dim); position:relative; padding-bottom:4px; transition:color .2s; cursor:pointer;}
+        .plp-nav-links a:hover{color:var(--gold-soft);}
+        .plp-nav-icons{display:flex; align-items:center; gap:22px; font-size:14px; color:var(--cream-dim);}
+        .plp-nav-icons a{display:flex; align-items:center; gap:6px; cursor:pointer;}
+        .plp-cart-count{
+          background:var(--gold); color:#141310; font-size:10px; font-weight:500;
+          width:16px; height:16px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+          font-family:'Jost',sans-serif;
+        }
+
+        /* HERO */
+        .plp-hero{
+          position:relative; overflow:hidden; padding:120px 40px 100px;
+          background: radial-gradient(ellipse 700px 500px at 82% 18%, rgba(201,162,75,0.10), transparent 60%), linear-gradient(180deg,#141310,#0f0f0d);
+          border-bottom:1px solid var(--gold-line);
+        }
+        .plp-hero-inner{max-width:1180px; margin:0 auto; display:grid; grid-template-columns:1.1fr 0.9fr; gap:60px; align-items:center;}
+        .plp-hero-eyebrow{margin-bottom:22px;}
+        .plp-hero h1{font-size:64px; line-height:1.05; color:var(--cream); margin:0 0 24px;}
+        .plp-hero h1 em{font-style:italic; color:var(--gold-soft);}
+        .plp-hero p{font-size:16px; line-height:1.8; color:var(--cream-dim); max-width:440px; margin:0 0 36px; font-weight:300;}
+        .plp-btn-row{display:flex; gap:18px; align-items:center;}
+        .plp-btn{
+          display:inline-block; padding:15px 34px; font-size:12px; letter-spacing:0.18em; text-transform:uppercase;
+          border:1px solid var(--gold); color:#141310; background:var(--gold); transition:all .25s; cursor:pointer;
+        }
+        .plp-btn:hover{background:transparent; color:var(--gold-soft);}
+        .plp-btn-ghost{
+          display:inline-block; padding:15px 30px; font-size:12px; letter-spacing:0.18em; text-transform:uppercase;
+          border:1px solid var(--gold-line); color:var(--cream-dim); transition:all .25s; cursor:pointer; background:none;
+        }
+        .plp-btn-ghost:hover{border-color:var(--gold); color:var(--gold-soft);}
+        .plp-hero-visual{ position:relative; display:flex; align-items:center; justify-content:center; height:460px; }
+        .plp-hero-plate{
+          width:380px; height:380px; border-radius:50%;
+          background:radial-gradient(circle at 40% 30%, #23221d, #131210 72%);
+          border:1px solid var(--gold-line); display:flex; align-items:center; justify-content:center; position:relative;
+        }
+        .plp-hero-plate::before{ content:""; position:absolute; inset:22px; border-radius:50%; border:1px solid rgba(201,162,75,0.18); }
+        .plp-hero-plate svg{height:74%; width:auto; filter:drop-shadow(0 18px 30px rgba(0,0,0,0.55));}
+
+        /* STRIP */
+        .plp-strip{ border-bottom:1px solid var(--gold-line); padding:16px 40px; overflow:hidden; white-space:nowrap; background:var(--panel); }
+        .plp-strip-track{display:inline-flex; gap:60px; font-size:11px; letter-spacing:0.28em; text-transform:uppercase; color:var(--stone);}
+
+        /* SECTIONS */
+        .plp-section{padding:100px 40px;}
+        .plp-section-head{display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:50px; border-bottom:1px solid var(--gold-line); padding-bottom:26px;}
+        .plp-section-head h2{font-size:38px; color:var(--cream); margin:0;}
+        .plp-section-head .plp-view-all{font-size:12px; letter-spacing:0.14em; text-transform:uppercase; color:var(--gold-soft); border-bottom:1px solid var(--gold-line); padding-bottom:4px; cursor:pointer;}
+
+        /* GRID */
+        .plp-grid{max-width:1180px; margin:0 auto; display:grid; grid-template-columns:repeat(4,1fr); gap:28px;}
+        .plp-card{ background:var(--panel); border:1px solid var(--gold-line); display:flex; flex-direction:column; transition:border-color .25s, transform .25s; }
+        .plp-card:hover{border-color:var(--gold); transform:translateY(-4px);}
+        .plp-card-media{ height:220px; display:flex; align-items:center; justify-content:center; background:radial-gradient(ellipse at 50% 30%, #24221c, #17160f 75%); position:relative; border-bottom:1px solid var(--gold-line); }
+        .plp-card-media svg{height:64%; width:auto;}
+        .plp-card-badge{ position:absolute; top:12px; left:12px; font-size:9px; letter-spacing:0.2em; text-transform:uppercase; color:#141310; background:var(--gold-soft); padding:4px 9px; }
+        .plp-card-body{padding:20px 20px 24px;}
+        .plp-card-cat{font-size:10px; letter-spacing:0.2em; text-transform:uppercase; color:var(--stone); margin-bottom:8px;}
+        .plp-card-name{font-family:'Cormorant Garamond',serif; font-size:21px; color:var(--cream); margin-bottom:6px;}
+        .plp-card-note{font-size:12px; color:var(--cream-dim); margin-bottom:16px; line-height:1.6;}
+        .plp-card-foot{display:flex; align-items:center; justify-content:space-between;}
+        .plp-price{font-family:'Cormorant Garamond',serif; font-size:19px; color:var(--gold-soft);}
+        .plp-add{
+          font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:var(--cream);
+          border:1px solid var(--gold-line); padding:8px 14px; transition:all .2s; cursor:pointer; background:none;
+          font-family:'Jost',sans-serif;
+        }
+        .plp-add:hover{border-color:var(--gold); color:var(--gold-soft);}
+
+        /* SPLIT */
+        .plp-split{ background:var(--panel2); border-top:1px solid var(--gold-line); border-bottom:1px solid var(--gold-line); }
+        .plp-split-inner{max-width:1180px; margin:0 auto; display:grid; grid-template-columns:1fr 1fr;}
+        .plp-split-media{ min-height:420px; display:flex; align-items:center; justify-content:center; background:radial-gradient(ellipse at 50% 40%, #26241d, #16150f 75%); border-right:1px solid var(--gold-line); }
+        .plp-split-media img{height:52%; width:auto;}
+        .plp-split-text{padding:80px 60px; display:flex; flex-direction:column; justify-content:center;}
+        .plp-split-text h2{font-size:34px; margin:16px 0 20px; color:var(--cream);}
+        .plp-split-text p{font-size:15px; line-height:1.85; color:var(--cream-dim); margin:0 0 28px; max-width:420px; font-weight:300;}
+
+        /* BLOG */
+        .plp-blog-grid{max-width:1180px; margin:0 auto; display:grid; grid-template-columns:repeat(3,1fr); gap:28px;}
+        .plp-post{border:1px solid var(--gold-line); cursor:pointer; transition:border-color .2s;}
+        .plp-post:hover{border-color:var(--gold);}
+        .plp-post-media{height:170px; background:linear-gradient(150deg,#221f18,#151410);}
+        .plp-post-body{padding:22px;}
+        .plp-post-tag{font-size:10px; letter-spacing:0.2em; text-transform:uppercase; color:var(--gold-soft); margin-bottom:10px;}
+        .plp-post h3{font-size:20px; color:var(--cream); margin:0 0 10px; line-height:1.3;}
+        .plp-post p{font-size:12.5px; color:var(--cream-dim); line-height:1.7; margin:0;}
+
+        /* NEWSLETTER */
+        .plp-news{
+          padding:90px 40px; text-align:center; border-bottom:1px solid var(--gold-line);
+          background:radial-gradient(ellipse 800px 300px at 50% 0%, rgba(201,162,75,0.08), transparent 70%);
+        }
+        .plp-news h2{font-size:34px; margin:16px 0 14px;}
+        .plp-news p{color:var(--cream-dim); font-size:14px; margin:0 0 30px;}
+        .plp-news-form{display:flex; justify-content:center; gap:0; max-width:440px; margin:0 auto;}
+        .plp-news-form input{
+          flex:1; background:transparent; border:1px solid var(--gold-line); border-right:none;
+          padding:15px 18px; color:var(--cream); font-family:'Jost',sans-serif; font-size:13px; outline:none;
+        }
+        .plp-news-form input::placeholder{color:var(--stone);}
+        .plp-news-form button{
+          background:var(--gold); border:1px solid var(--gold); color:#141310; padding:0 26px;
+          font-size:12px; letter-spacing:0.14em; text-transform:uppercase; cursor:pointer;
+        }
+        .plp-news-msg{margin-top:16px; font-size:13px; color:var(--gold-soft);}
+        .plp-news-form button:disabled{opacity:.6; cursor:wait;}
+
+        /* FOOTER */
+        .plp-footer{padding:70px 40px 30px; background:#0d0d0b;}
+        .plp-foot-inner{max-width:1180px; margin:0 auto; display:grid; grid-template-columns:1.4fr 1fr 1fr 1fr; gap:40px; padding-bottom:50px; border-bottom:1px solid var(--gold-line);}
+        .plp-foot-brand img{height:36px; margin-bottom:16px;}
+        .plp-foot-brand p{font-size:12.5px; color:var(--stone); line-height:1.8; max-width:260px; margin:0;}
+        .plp-foot-col h4{font-size:11px; letter-spacing:0.2em; text-transform:uppercase; color:var(--gold-soft); margin:0 0 18px; font-weight:400; font-family:'Jost',sans-serif;}
+        .plp-foot-col a{display:block; font-size:13px; color:var(--cream-dim); margin-bottom:12px; cursor:pointer;}
+        .plp-foot-col a:hover{color:var(--gold-soft);}
+        .plp-foot-bottom{max-width:1180px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; padding-top:24px; font-size:11px; color:var(--stone); letter-spacing:0.04em;}
+
+        @media (max-width:980px){
+          .plp-hero-inner{grid-template-columns:1fr;}
+          .plp-hero-visual{height:300px;}
+          .plp-grid{grid-template-columns:repeat(2,1fr);}
+          .plp-split-inner{grid-template-columns:1fr;}
+          .plp-split-media{border-right:none; border-bottom:1px solid var(--gold-line); min-height:260px;}
+          .plp-blog-grid{grid-template-columns:1fr;}
+          .plp-foot-inner{grid-template-columns:1fr 1fr;}
+          .plp-nav-links{display:none;}
+        }
+
+        /* MODALS */
+        .plp-overlay{
+          position:fixed; inset:0; background:rgba(10,10,9,0.72); backdrop-filter:blur(3px);
+          display:flex; align-items:center; justify-content:center; z-index:200; padding:20px;
+        }
+        .plp-modal{
+          background:var(--panel); border:1px solid var(--gold-line); max-width:420px; width:100%;
+          padding:36px 32px; position:relative; max-height:88vh; overflow-y:auto;
+        }
+        .plp-modal-close{
+          position:absolute; top:16px; right:18px; font-size:20px; color:var(--cream-dim); cursor:pointer;
+          line-height:1; background:none; border:none;
+        }
+        .plp-modal-close:hover{color:var(--gold-soft);}
+        .plp-modal h3{font-family:'Cormorant Garamond',serif; font-size:26px; color:var(--cream); margin:0 0 6px;}
+        .plp-modal .plp-sub{font-size:12.5px; color:var(--stone); margin-bottom:24px;}
+        .plp-field{margin-bottom:16px;}
+        .plp-field label{display:block; font-size:11px; letter-spacing:0.1em; text-transform:uppercase; color:var(--cream-dim); margin-bottom:8px;}
+        .plp-field input{
+          width:100%; background:transparent; border:1px solid var(--gold-line); padding:12px 14px;
+          color:var(--cream); font-family:'Jost',sans-serif; font-size:13px; outline:none;
+        }
+        .plp-field input:focus{border-color:var(--gold);}
+        .plp-modal-msg{font-size:12.5px; color:var(--gold-soft); margin-top:14px;}
+        .plp-switch-line{font-size:12px; color:var(--stone); margin-top:18px; text-align:center;}
+        .plp-switch-line a{color:var(--gold-soft); cursor:pointer;}
+
+        /* CART DRAWER */
+        .plp-cart-drawer{
+          position:fixed; top:0; right:0; height:100%; width:100%; max-width:400px;
+          background:var(--panel); border-left:1px solid var(--gold-line); z-index:210;
+          transform:translateX(100%); transition:transform .3s ease; display:flex; flex-direction:column;
+        }
+        .plp-cart-drawer.open{transform:translateX(0);}
+        .plp-cart-head{padding:24px; border-bottom:1px solid var(--gold-line); display:flex; justify-content:space-between; align-items:center;}
+        .plp-cart-head h3{font-family:'Cormorant Garamond',serif; font-size:22px; margin:0;}
+        .plp-cart-items{flex:1; overflow-y:auto; padding:16px 24px;}
+        .plp-cart-item{display:flex; gap:14px; padding:16px 0; border-bottom:1px solid rgba(201,162,75,0.15);}
+        .plp-cart-item-thumb{width:52px; height:70px; background:radial-gradient(ellipse at 50% 30%, #24221c, #17160f 75%); border:1px solid var(--gold-line); flex-shrink:0;}
+        .plp-cart-item-info{flex:1;}
+        .plp-cart-item-info .plp-name{font-family:'Cormorant Garamond',serif; font-size:16px; color:var(--cream);}
+        .plp-cart-item-info .plp-meta{font-size:11px; color:var(--stone); margin:4px 0 8px;}
+        .plp-qty-row{display:flex; align-items:center; gap:10px; font-size:12px;}
+        .plp-qty-btn{border:1px solid var(--gold-line); width:22px; height:22px; display:flex; align-items:center; justify-content:center; cursor:pointer; background:none; color:var(--cream);}
+        .plp-qty-btn:hover{border-color:var(--gold); color:var(--gold-soft);}
+        .plp-remove-link{font-size:11px; color:var(--stone); text-decoration:underline; cursor:pointer; margin-left:auto;}
+        .plp-remove-link:hover{color:var(--gold-soft);}
+        .plp-cart-empty{padding:60px 20px; text-align:center; color:var(--stone); font-size:13px;}
+        .plp-cart-foot{padding:22px 24px; border-top:1px solid var(--gold-line);}
+        .plp-cart-subtotal{display:flex; justify-content:space-between; font-size:14px; margin-bottom:16px; color:var(--cream);}
+        .plp-toast{
+          position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(20px);
+          background:var(--gold); color:#141310; padding:13px 26px; font-size:12.5px; letter-spacing:0.04em;
+          z-index:300; opacity:0; pointer-events:none; transition:all .3s ease;
+        }
+        .plp-toast.show{opacity:1; transform:translateX(-50%) translateY(0); pointer-events:auto;}
+      `}</style>
+
+      {/* ---------- Modals ---------- */}
+      {openModalId === "signin" && (
+        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+          <div className="plp-modal">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <h3>Sign in</h3>
+            <div className="plp-sub">Access your account, orders and wishlist.</div>
+            <form onSubmit={handleSignin}>
+              <div className="plp-field">
+                <label>Email</label>
+                <input type="email" required placeholder="name@email.com" />
+              </div>
+              <div className="plp-field">
+                <label>Password</label>
+                <input type="password" required placeholder="••••••••" />
+              </div>
+              <button type="submit" className="plp-btn" style={{ width: "100%" }}>Sign in</button>
+              {signinMsg && <div className="plp-modal-msg">{signinMsg}</div>}
+            </form>
+            <div className="plp-switch-line">
+              New here? <a onClick={() => switchModal("create")}>Create an account</a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {openModalId === "create" && (
+        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+          <div className="plp-modal">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <h3>Create account</h3>
+            <div className="plp-sub">Join to track orders and save your favorites.</div>
+            <form onSubmit={handleCreateAccount}>
+              <div className="plp-field">
+                <label>Full name</label>
+                <input type="text" required placeholder="Jane Doe" />
+              </div>
+              <div className="plp-field">
+                <label>Email</label>
+                <input type="email" required placeholder="name@email.com" />
+              </div>
+              <div className="plp-field">
+                <label>Password</label>
+                <input type="password" required placeholder="••••••••" />
+              </div>
+              <button type="submit" className="plp-btn" style={{ width: "100%" }}>Create account</button>
+              {createMsg && <div className="plp-modal-msg">{createMsg}</div>}
+            </form>
+            <div className="plp-switch-line">
+              Already a member? <a onClick={() => switchModal("signin")}>Sign in</a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {openModalId === "tracking" && (
+        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+          <div className="plp-modal">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <h3>Track your order</h3>
+            <div className="plp-sub">Enter your order number and email to see the latest status.</div>
+            <form onSubmit={handleTracking}>
+              <div className="plp-field">
+                <label>Order number</label>
+                <input type="text" required placeholder="PLP-000000" />
+              </div>
+              <div className="plp-field">
+                <label>Email</label>
+                <input type="email" required placeholder="name@email.com" />
+              </div>
+              <button type="submit" className="plp-btn" style={{ width: "100%" }}>Track order</button>
+              {trackingMsg && <div className="plp-modal-msg">{trackingMsg}</div>}
+            </form>
+          </div>
+        </div>
+      )}
+
+      {openModalId === "info" && (
+        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+          <div className="plp-modal">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <h3>{info.title}</h3>
+            <div className="plp-sub">{info.body}</div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Cart Drawer ---------- */}
+      <div className={`plp-cart-drawer${cartOpen ? " open" : ""}`}>
+        <div className="plp-cart-head">
+          <h3>Your bag</h3>
+          <button className="plp-modal-close" style={{ position: "static" }} onClick={() => setCartOpen(false)}>&times;</button>
+        </div>
+        <div className="plp-cart-items">
+          {cart.length === 0 ? (
+            <div className="plp-cart-empty">Your bag is empty.</div>
+          ) : (
+            cart.map((item) => (
+              <div className="plp-cart-item" key={item.name}>
+                <div className="plp-cart-item-thumb" />
+                <div className="plp-cart-item-info">
+                  <div className="plp-name">{item.name}</div>
+                  <div className="plp-meta">${item.price} each</div>
+                  <div className="plp-qty-row">
+                    <button className="plp-qty-btn" onClick={() => changeQty(item.name, -1)}>-</button>
+                    <span>{item.qty}</span>
+                    <button className="plp-qty-btn" onClick={() => changeQty(item.name, 1)}>+</button>
+                    <span className="plp-remove-link" onClick={() => removeFromCart(item.name)}>Remove</span>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+        <div className="plp-cart-foot">
+          <div className="plp-cart-subtotal">
+            <span>Subtotal</span>
+            <span>${cartSubtotal}</span>
+          </div>
+          <a href="#" className="plp-btn" style={{ width: "100%", textAlign: "center", display: "block" }} onClick={handleCheckout}>
+            {checkoutLoading ? "Placing order…" : "Checkout"}
+          </a>
+        </div>
+      </div>
+
+      <div className={`plp-toast${toast.show ? " show" : ""}`}>{toast.text}</div>
+
+      {/* ---------- Header ---------- */}
+      <header className="plp-header">
+        <nav className="plp-nav">
+          <div className="plp-brand">
+            <img src={crest} alt="Prestige Le Parfum" />
+            <div className="plp-brand-name">PRESTIGE<span>LE PARFUM</span></div>
+          </div>
+          <div className="plp-nav-links">
+            <a onClick={() => scrollToSection("top")}>Home</a>
+            <a onClick={() => scrollToSection("productsSection")}>Products</a>
+            <a onClick={() => scrollToSection("storySection")}>Collections</a>
+            <a onClick={() => scrollToSection("blogSection")}>Blog</a>
+            <a onClick={() => openModal("tracking")}>Order Tracking</a>
+          </div>
+          <div className="plp-nav-icons">
+            {user ? (
+              <>
+                {role === "admin" && <a href="/admin">Admin</a>}
+                <a onClick={handleSignout}>Sign out</a>
+              </>
+            ) : (
+              <a onClick={() => openModal("signin")}>Sign in</a>
+            )}
+            <a onClick={() => setCartOpen(true)}>Bag <span className="plp-cart-count">{cartCount}</span></a>
+          </div>
+        </nav>
+      </header>
+
+      {/* ---------- Hero ---------- */}
+      <section className="plp-hero" ref={sectionRefs.top}>
+        <div className="plp-hero-inner">
+          <div>
+            <div className="eyebrow plp-hero-eyebrow">New Season Collection</div>
+            <h1>Wear a scent<br />worthy of <em>a crown</em></h1>
+            <p>Rare ingredients, hand-finished bottles, and fragrances composed for those who don't follow trends. Discover the house of Prestige Le Parfum.</p>
+            <div className="plp-btn-row">
+              <a className="plp-btn" onClick={() => scrollToSection("productsSection")}>Shop the collection</a>
+              <a className="plp-btn-ghost" onClick={() => scrollToSection("storySection")}>Our story</a>
+            </div>
+          </div>
+          <div className="plp-hero-visual">
+            <div className="plp-hero-plate">
+              <BottleSVG />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ---------- Strip ---------- */}
+      <div className="plp-strip">
+        <div className="plp-strip-track">
+          {[...STRIP_ITEMS, ...STRIP_ITEMS].map((t, i) => (
+            <span key={i}>{t}</span>
+          ))}
+        </div>
+      </div>
+
+      {/* ---------- Products ---------- */}
+      <section className="plp-section" ref={sectionRefs.productsSection}>
+        <div className="plp-section-head">
+          <div>
+            <div className="eyebrow">Best sellers</div>
+            <h2>Signature edition</h2>
+          </div>
+          <a
+            className="plp-view-all"
+            onClick={() =>
+              showInfo("All products", "Our full catalog is being finished for this preview — check back soon for the complete range.")
+            }
+          >
+            View all products
+          </a>
+        </div>
+
+        <div className="plp-grid">
+          {PRODUCTS.map((p) => (
+            <div className="plp-card" key={p.name}>
+              <div className="plp-card-media">
+                {p.badge && <span className="plp-card-badge">{p.badge}</span>}
+                <BottleSVG />
+              </div>
+              <div className="plp-card-body">
+                <div className="plp-card-cat">Eau de Parfum · 50ml</div>
+                <div className="plp-card-name">{p.name}</div>
+                <div className="plp-card-note">{p.notes}</div>
+                <div className="plp-card-foot">
+                  <span className="plp-price">${p.price}</span>
+                  <button className="plp-add" onClick={() => addToCart(p.name, p.price)}>Add to bag</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ---------- Story split ---------- */}
+      <section className="plp-split" ref={sectionRefs.storySection}>
+        <div className="plp-split-inner">
+          <div className="plp-split-media">
+            <img src={crest} alt="Prestige Le Parfum crest" />
+          </div>
+          <div className="plp-split-text">
+            <div className="eyebrow">The house</div>
+            <h2>Composed in small<br />batches, worn for years</h2>
+            <p>Every Prestige Le Parfum fragrance is blended in limited runs and finished by hand, so each bottle that reaches your door carries the same care it left the atelier with.</p>
+            <a
+              className="plp-btn-ghost"
+              style={{ width: "fit-content" }}
+              onClick={() =>
+                showInfo("Our story", "Our full brand story and atelier film are being prepared for this preview — thank you for your patience.")
+              }
+            >
+              Discover our story
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* ---------- Blog ---------- */}
+      <section className="plp-section" ref={sectionRefs.blogSection}>
+        <div className="plp-section-head">
+          <div>
+            <div className="eyebrow">Journal</div>
+            <h2>From the blog</h2>
+          </div>
+          <a
+            className="plp-view-all"
+            onClick={() => showInfo("Journal", "Our full journal archive is coming soon — new stories are published monthly.")}
+          >
+            Read the journal
+          </a>
+        </div>
+        <div className="plp-blog-grid">
+          {BLOG_POSTS.map((post) => (
+            <div className="plp-post" key={post.title} onClick={() => showInfo(post.infoTitle, post.infoBody)}>
+              <div className="plp-post-media" />
+              <div className="plp-post-body">
+                <div className="plp-post-tag">{post.tag}</div>
+                <h3>{post.title}</h3>
+                <p>{post.excerpt}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ---------- Newsletter ---------- */}
+      <section className="plp-news">
+        <div className="eyebrow">Stay in the house</div>
+        <h2>Join our mailing list</h2>
+        <p>New arrivals, private previews, and notes from the atelier — no more than twice a month.</p>
+        <form className="plp-news-form" onSubmit={handleNewsletter}>
+          <input
+            type="email"
+            placeholder="name@email.com"
+            required
+            value={newsletterEmail}
+            onChange={(e) => setNewsletterEmail(e.target.value)}
+          />
+          <button type="submit" disabled={newsletterLoading}>
+            {newsletterLoading ? "Subscribing…" : "Subscribe"}
+          </button>
+        </form>
+        {newsletterMsg && (
+          <div className="plp-news-msg" style={newsletterError ? { color: "#e0907f" } : undefined}>
+            {newsletterMsg}
+          </div>
+        )}
+      </section>
+
+      {/* ---------- Footer ---------- */}
+      <footer className="plp-footer">
+        <div className="plp-foot-inner">
+          <div className="plp-foot-brand">
+            <img src={crest} alt="Prestige Le Parfum" />
+            <p>A house of fragrance built on rare materials, small batches, and unmistakable presence.</p>
+          </div>
+          <div className="plp-foot-col">
+            <h4>Shop</h4>
+            <a onClick={() => scrollToSection("productsSection")}>All products</a>
+            <a onClick={() => scrollToSection("productsSection")}>Best sellers</a>
+            <a onClick={() => showInfo("New arrivals", "New arrivals will be added to this preview as they launch.")}>New arrivals</a>
+            <a onClick={() => showInfo("Gift sets", "Gift sets are being curated for this preview — check back soon.")}>Gift sets</a>
+          </div>
+          <div className="plp-foot-col">
+            <h4>Support</h4>
+            <a onClick={() => openModal("tracking")}>Order tracking</a>
+            <a onClick={() => showInfo("Shipping and returns", "Free shipping on orders over $120. Returns are accepted within 30 days of delivery in original condition.")}>Shipping and returns</a>
+            <a onClick={() => showInfo("Contact us", "Reach us any time at hello@prestigeleparfum.example — we usually reply within one business day.")}>Contact us</a>
+            <a onClick={() => showInfo("FAQ", "Frequently asked questions are being compiled for this preview.")}>FAQ</a>
+          </div>
+          <div className="plp-foot-col">
+            <h4>Account</h4>
+            <a onClick={() => openModal("signin")}>Sign in</a>
+            <a onClick={() => openModal("create")}>Create account</a>
+            <a onClick={() => showInfo("My orders", "Sign in to view your order history.")}>My orders</a>
+            <a onClick={() => showInfo("Wishlist", "Sign in to view and manage your wishlist.")}>Wishlist</a>
+          </div>
+        </div>
+        <div className="plp-foot-bottom">
+          <span>&copy; 2026 Prestige Le Parfum. All rights reserved.</span>
+          <span>Payments secured by Stripe</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
