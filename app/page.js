@@ -17,6 +17,8 @@ const friendlyAuthError = (error) => {
   const m = (error?.message || "").toLowerCase();
   if (m.includes("invalid login")) return "Incorrect email or password.";
   if (m.includes("database error saving new user")) return EMAIL_RULE; // blocked by the database domain rule
+  if (m.includes("error sending") || m.includes("sending confirmation") || m.includes("sending recovery"))
+    return "We couldn't send your code right now. Please try again in a few minutes.";
   if (m.includes("already registered")) return "That email is already registered. Try signing in.";
   if (m.includes("rate limit") || (m.includes("after") && m.includes("seconds"))) return "Too many requests. Please wait a minute and try again.";
   return error?.message || "Something went wrong. Please try again.";
@@ -234,6 +236,19 @@ export default function PrestigeLeParfum() {
   /* ---------------- Modals ---------------- */
   const openModal = (id) => setOpenModalId(id);
   const closeModal = () => setOpenModalId(null);
+
+  // Close a popup only when the press AND the release both happen on the dark background.
+  // (Pressing inside the panel, e.g. to select text, then letting go outside no longer closes it.)
+  const pressStartedOnOverlay = useRef(false);
+  const overlayProps = {
+    onPointerDown: (e) => {
+      pressStartedOnOverlay.current = e.target === e.currentTarget;
+    },
+    onClick: (e) => {
+      if (pressStartedOnOverlay.current && e.target === e.currentTarget) closeModal();
+      pressStartedOnOverlay.current = false;
+    },
+  };
   const switchModal = (toId) => setOpenModalId(toId);
   const showInfo = (title, body) => {
     setInfo({ title, body });
@@ -284,7 +299,7 @@ export default function PrestigeLeParfum() {
       }
       return setSigninMsg(friendlyAuthError(error));
     }
-    setSigninMsg("Signed in — welcome back.");
+    setSigninMsg("Signed in. Welcome back!");
     setTimeout(() => {
       closeModal();
       setSigninMsg("");
@@ -356,7 +371,7 @@ export default function PrestigeLeParfum() {
     setAuthBusy(false);
     setCodeMsg("");
     closeModal();
-    showToast(codeMode === "recovery" ? "Password updated — you're signed in" : "Email verified — welcome!");
+    showToast(codeMode === "recovery" ? "Password updated. You're signed in!" : "Email confirmed. Welcome!");
   };
 
   const handleResend = async () => {
@@ -755,7 +770,7 @@ export default function PrestigeLeParfum() {
 
       {/* ---------- Modals ---------- */}
       {openModalId === "signin" && (
-        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+        <div className="plp-overlay" {...overlayProps}>
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>Sign in</h3>
@@ -791,7 +806,7 @@ export default function PrestigeLeParfum() {
       )}
 
       {openModalId === "create" && (
-        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+        <div className="plp-overlay" {...overlayProps}>
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>Create account</h3>
@@ -826,7 +841,7 @@ export default function PrestigeLeParfum() {
       )}
 
       {openModalId === "forgot" && (
-        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+        <div className="plp-overlay" {...overlayProps}>
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>Forgot password</h3>
@@ -847,7 +862,7 @@ export default function PrestigeLeParfum() {
       )}
 
       {openModalId === "code" && (
-        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+        <div className="plp-overlay" {...overlayProps}>
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>{codeMode === "recovery" ? "Reset your password" : "Verify your email"}</h3>
@@ -893,7 +908,7 @@ export default function PrestigeLeParfum() {
       )}
 
       {openModalId === "signout" && (
-        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+        <div className="plp-overlay" {...overlayProps}>
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>Sign out?</h3>
@@ -915,7 +930,7 @@ export default function PrestigeLeParfum() {
       )}
 
       {openModalId === "tracking" && (
-        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+        <div className="plp-overlay" {...overlayProps}>
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>Track your order</h3>
@@ -943,7 +958,7 @@ export default function PrestigeLeParfum() {
       )}
 
       {openModalId === "info" && (
-        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+        <div className="plp-overlay" {...overlayProps}>
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>{info.title}</h3>
