@@ -1,11 +1,26 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { supabase } from "../lib/supabase";
+import { supabase, setRemember, rememberExpired } from "../lib/supabase";
 
 const MAX_PER_ITEM = 5; // bottles of the same fragrance per order
 const MAX_PER_ORDER = 10; // bottles in total per order
 const STATUS_LABEL = { pending: "Order received", paid: "Paid", shipped: "Shipped", delivered: "Delivered", cancelled: "Cancelled" };
+
+/* ---------------- Account rules ---------------- */
+const ALLOWED_EMAIL = /^[^\s@]+@(gmail\.com|tip\.edu\.ph)$/i; // only these two domains, nothing else
+const EMAIL_RULE = "Please use your @gmail.com or @tip.edu.ph email address.";
+const PASSWORD_RULE = "Password needs 8+ characters with at least one letter and one number.";
+const validPassword = (p) => p.length >= 8 && /[A-Za-z]/.test(p) && /\d/.test(p);
+
+const friendlyAuthError = (error) => {
+  const m = (error?.message || "").toLowerCase();
+  if (m.includes("invalid login")) return "Incorrect email or password.";
+  if (m.includes("database error saving new user")) return EMAIL_RULE; // blocked by the database domain rule
+  if (m.includes("already registered")) return "That email is already registered. Try signing in.";
+  if (m.includes("rate limit") || (m.includes("after") && m.includes("seconds"))) return "Too many requests. Please wait a minute and try again.";
+  return error?.message || "Something went wrong. Please try again.";
+};
 
 /* ---------- Reusable bottle SVG (used in hero + product cards) ---------- */
 function BottleSVG({ style }) {
@@ -89,6 +104,19 @@ export default function PrestigeLeParfum() {
   const [role, setRole] = useState(null); // 'customer' | 'admin'
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false); // mobile menu
+  const [showPw, setShowPw] = useState(false); // show/hide password
+  const [authEmail, setAuthEmail] = useState(""); // email the 6-digit code was sent to
+  const [codeMode, setCodeMode] = useState("signup"); // "signup" | "recovery"
+  const [codeMsg, setCodeMsg] = useState("");
+  const [forgotMsg, setForgotMsg] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [cooldown, setCooldown] = useState(0); // seconds until "Resend code" works again
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
 
   /* ---------------- Auth: keep `user` and `role` in sync with Supabase ---------------- */
   useEffect(() => {
@@ -97,6 +125,11 @@ export default function PrestigeLeParfum() {
       const { data } = await supabase.from("profiles").select("role").eq("id", u.id).single();
       setRole(data?.role ?? "customer");
     };
+    if (rememberExpired()) {
+      // "Remember me" lasted 30 days: sign out so the user logs in again
+      supabase.auth.signOut();
+      setRemember(false);
+    }
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
       setTimeout(() => loadRole(session?.user), 0); // setTimeout avoids a known Supabase deadlock
@@ -218,15 +251,38 @@ export default function PrestigeLeParfum() {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
+  /* ---------------- Sign in / create account / codes / forgot password / sign out ---------------- */
+  const startCode = (email, mode) => {
+    setAuthEmail(email);
+    setCodeMode(mode);
+    setCodeMsg("");
+    setCooldown(60); // Supabase allows one new code per minute
+    openModal("code");
+  };
+
   const handleSignin = async (e) => {
     e.preventDefault();
+    if (authBusy) return;
     const form = e.target;
-    const [email, password] = [...form.querySelectorAll("input")].map((i) => i.value);
+    const fd = new FormData(form);
+    const email = String(fd.get("email")).trim().toLowerCase();
+    const password = String(fd.get("password"));
+    if (!ALLOWED_EMAIL.test(email)) return setSigninMsg(EMAIL_RULE);
+    if (!password) return setSigninMsg("Please enter your password.");
+
+    setAuthBusy(true);
     setSigninMsg("Signing in…");
+    setRemember(fd.get("remember") === "on"); // decides where the login is stored
     const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setAuthBusy(false);
     if (error) {
-      setSigninMsg(error.message);
-      return;
+      if (/not confirmed/i.test(error.message)) {
+        // account exists but the email was never verified: send a fresh code
+        await supabase.auth.resend({ type: "signup", email });
+        setSigninMsg("");
+        return startCode(email, "signup");
+      }
+      return setSigninMsg(friendlyAuthError(error));
     }
     setSigninMsg("Signed in — welcome back.");
     setTimeout(() => {
@@ -238,32 +294,104 @@ export default function PrestigeLeParfum() {
 
   const handleCreateAccount = async (e) => {
     e.preventDefault();
-    const form = e.target;
-    const [fullName, email, password] = [...form.querySelectorAll("input")].map((i) => i.value);
+    if (authBusy) return;
+    const fd = new FormData(e.target);
+    const fullName = String(fd.get("full_name")).trim();
+    const email = String(fd.get("email")).trim().toLowerCase();
+    const password = String(fd.get("password"));
+    if (fullName.length < 2) return setCreateMsg("Please enter your full name.");
+    if (!ALLOWED_EMAIL.test(email)) return setCreateMsg(EMAIL_RULE);
+    if (!validPassword(password)) return setCreateMsg(PASSWORD_RULE);
+
+    setAuthBusy(true);
     setCreateMsg("Creating your account…");
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: { data: { full_name: fullName } },
     });
-    if (error) {
-      setCreateMsg(error.message);
-      return;
+    setAuthBusy(false);
+    if (error) return setCreateMsg(friendlyAuthError(error));
+    if (data.user && data.user.identities && data.user.identities.length === 0) {
+      return setCreateMsg("That email is already registered. Try signing in.");
     }
-    if (!data.session) {
-      setCreateMsg("Almost there — check your email to confirm your account.");
-      return;
-    }
-    setCreateMsg("Account created — welcome to the house.");
-    setTimeout(() => {
-      closeModal();
+    if (data.session) {
+      // (only happens if "Confirm email" is switched off in Supabase)
       setCreateMsg("");
-      form.reset();
-    }, 900);
+      closeModal();
+      return showToast("Welcome to the house");
+    }
+    setCreateMsg("");
+    startCode(email, "signup"); // a 6-digit code was emailed
   };
 
-  const handleSignout = async () => {
+  const handleVerifyCode = async (e) => {
+    e.preventDefault();
+    if (authBusy) return;
+    const fd = new FormData(e.target);
+    const code = String(fd.get("code")).replace(/\D/g, "");
+    const newPassword = String(fd.get("password") || "");
+    if (code.length !== 6) return setCodeMsg("Enter the 6-digit code from your email.");
+    if (codeMode === "recovery" && !validPassword(newPassword)) return setCodeMsg(PASSWORD_RULE);
+
+    setAuthBusy(true);
+    setCodeMsg("Checking your code…");
+    setRemember(true); // verified users stay signed in for 30 days
+    const { error } = await supabase.auth.verifyOtp({
+      email: authEmail,
+      token: code,
+      type: codeMode === "recovery" ? "recovery" : "signup",
+    });
+    if (error) {
+      setAuthBusy(false);
+      return setCodeMsg("That code is incorrect or has expired. You can request a new one below.");
+    }
+    if (codeMode === "recovery") {
+      const { error: pwError } = await supabase.auth.updateUser({ password: newPassword });
+      if (pwError) {
+        setAuthBusy(false);
+        return setCodeMsg(friendlyAuthError(pwError));
+      }
+    }
+    setAuthBusy(false);
+    setCodeMsg("");
+    closeModal();
+    showToast(codeMode === "recovery" ? "Password updated — you're signed in" : "Email verified — welcome!");
+  };
+
+  const handleResend = async () => {
+    if (cooldown > 0 || authBusy) return;
+    setCodeMsg("Sending a new code…");
+    const { error } =
+      codeMode === "recovery"
+        ? await supabase.auth.resetPasswordForEmail(authEmail)
+        : await supabase.auth.resend({ type: "signup", email: authEmail });
+    if (error) return setCodeMsg(friendlyAuthError(error));
+    setCodeMsg("A new code is on its way.");
+    setCooldown(60);
+  };
+
+  const handleForgot = async (e) => {
+    e.preventDefault();
+    if (authBusy) return;
+    const email = String(new FormData(e.target).get("email")).trim().toLowerCase();
+    if (!ALLOWED_EMAIL.test(email)) return setForgotMsg(EMAIL_RULE);
+    setAuthBusy(true);
+    setForgotMsg("Sending your code…");
+    const { error } = await supabase.auth.resetPasswordForEmail(email);
+    setAuthBusy(false);
+    if (error) return setForgotMsg(friendlyAuthError(error));
+    setForgotMsg("");
+    startCode(email, "recovery");
+  };
+
+  const handleSignout = () => openModal("signout"); // asks "Are you sure?" first
+  const confirmSignout = async () => {
+    setAuthBusy(true);
     await supabase.auth.signOut();
+    setRemember(false);
+    setAuthBusy(false);
+    closeModal();
     showToast("Signed out");
   };
 
@@ -578,6 +706,18 @@ export default function PrestigeLeParfum() {
           color:var(--cream); font-family:'Jost',sans-serif; font-size:13px; outline:none;
         }
         .plp-field input:focus{border-color:var(--gold);}
+        .plp-modal{overflow-y:auto;}
+        .plp-pw{position:relative;}
+        .plp-field .plp-pw input{padding-right:70px;}
+        .plp-pw-toggle{position:absolute; right:6px; top:50%; transform:translateY(-50%); background:none; border:none; color:var(--gold-soft);
+          font-family:'Jost',sans-serif; font-size:11px; letter-spacing:0.14em; text-transform:uppercase; cursor:pointer; padding:10px;}
+        .plp-row{display:flex; justify-content:space-between; align-items:center; gap:10px 16px; flex-wrap:wrap; margin:2px 0 18px; font-size:12px;}
+        .plp-row a{color:var(--gold-soft); cursor:pointer;}
+        .plp-check{display:flex; align-items:center; gap:8px; color:var(--cream-dim); cursor:pointer;}
+        .plp-check input{width:auto; accent-color:var(--gold);}
+        .plp-hint{font-size:12px; color:var(--stone); margin:-6px 0 18px;}
+        .plp-field input.plp-code{text-align:center; letter-spacing:0.5em; font-size:22px;}
+        .plp-btn:disabled{opacity:.6; cursor:wait;}
         .plp-modal-msg{font-size:12.5px; color:var(--gold-soft); margin-top:14px;}
         .plp-switch-line{font-size:12px; color:var(--stone); margin-top:18px; text-align:center;}
         .plp-switch-line a{color:var(--gold-soft); cursor:pointer;}
@@ -620,16 +760,27 @@ export default function PrestigeLeParfum() {
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>Sign in</h3>
             <div className="plp-sub">Access your account, orders and wishlist.</div>
-            <form onSubmit={handleSignin}>
+            <form onSubmit={handleSignin} noValidate>
               <div className="plp-field">
                 <label>Email</label>
-                <input type="email" required placeholder="name@email.com" />
+                <input name="email" type="email" required placeholder="name@gmail.com" autoComplete="email" />
               </div>
               <div className="plp-field">
                 <label>Password</label>
-                <input type="password" required placeholder="••••••••" />
+                <div className="plp-pw">
+                  <input name="password" type={showPw ? "text" : "password"} required placeholder="••••••••" autoComplete="current-password" />
+                  <button type="button" className="plp-pw-toggle" onClick={() => setShowPw((v) => !v)}>
+                    {showPw ? "Hide" : "Show"}
+                  </button>
+                </div>
               </div>
-              <button type="submit" className="plp-btn" style={{ width: "100%" }}>Sign in</button>
+              <div className="plp-row">
+                <label className="plp-check">
+                  <input type="checkbox" name="remember" defaultChecked /> Remember me for 30 days
+                </label>
+                <a onClick={() => switchModal("forgot")}>Forgot password?</a>
+              </div>
+              <button type="submit" className="plp-btn" style={{ width: "100%" }} disabled={authBusy}>Sign in</button>
               {signinMsg && <div className="plp-modal-msg">{signinMsg}</div>}
             </form>
             <div className="plp-switch-line">
@@ -644,25 +795,120 @@ export default function PrestigeLeParfum() {
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>Create account</h3>
-            <div className="plp-sub">Join to place and track your orders.</div>
-            <form onSubmit={handleCreateAccount}>
+            <div className="plp-sub">Use your @gmail.com or @tip.edu.ph email. We'll send you a 6-digit code to verify it.</div>
+            <form onSubmit={handleCreateAccount} noValidate>
               <div className="plp-field">
                 <label>Full name</label>
-                <input type="text" required placeholder="Jane Doe" />
+                <input name="full_name" type="text" required placeholder="Jane Doe" autoComplete="name" />
               </div>
               <div className="plp-field">
                 <label>Email</label>
-                <input type="email" required placeholder="name@email.com" />
+                <input name="email" type="email" required placeholder="name@gmail.com" autoComplete="email" />
               </div>
               <div className="plp-field">
                 <label>Password</label>
-                <input type="password" required placeholder="••••••••" />
+                <div className="plp-pw">
+                  <input name="password" type={showPw ? "text" : "password"} required placeholder="••••••••" autoComplete="new-password" />
+                  <button type="button" className="plp-pw-toggle" onClick={() => setShowPw((v) => !v)}>
+                    {showPw ? "Hide" : "Show"}
+                  </button>
+                </div>
               </div>
-              <button type="submit" className="plp-btn" style={{ width: "100%" }}>Create account</button>
+              <div className="plp-hint">8+ characters, with at least one letter and one number.</div>
+              <button type="submit" className="plp-btn" style={{ width: "100%" }} disabled={authBusy}>Create account</button>
               {createMsg && <div className="plp-modal-msg">{createMsg}</div>}
             </form>
             <div className="plp-switch-line">
               Already a member? <a onClick={() => switchModal("signin")}>Sign in</a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {openModalId === "forgot" && (
+        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+          <div className="plp-modal">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <h3>Forgot password</h3>
+            <div className="plp-sub">Enter your email and we'll send you a 6-digit code.</div>
+            <form onSubmit={handleForgot} noValidate>
+              <div className="plp-field">
+                <label>Email</label>
+                <input name="email" type="email" required placeholder="name@gmail.com" autoComplete="email" autoFocus />
+              </div>
+              <button type="submit" className="plp-btn" style={{ width: "100%" }} disabled={authBusy}>Send code</button>
+              {forgotMsg && <div className="plp-modal-msg">{forgotMsg}</div>}
+            </form>
+            <div className="plp-switch-line">
+              Remembered it? <a onClick={() => switchModal("signin")}>Sign in</a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {openModalId === "code" && (
+        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+          <div className="plp-modal">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <h3>{codeMode === "recovery" ? "Reset your password" : "Verify your email"}</h3>
+            <div className="plp-sub">
+              We sent a 6-digit code to {authEmail}. It expires in 1 hour. Check your spam folder too.
+            </div>
+            <form onSubmit={handleVerifyCode} noValidate>
+              <div className="plp-field">
+                <label>6-digit code</label>
+                <input
+                  name="code"
+                  className="plp-code"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  autoComplete="one-time-code"
+                  placeholder="000000"
+                  autoFocus
+                />
+              </div>
+              {codeMode === "recovery" && (
+                <div className="plp-field">
+                  <label>New password</label>
+                  <div className="plp-pw">
+                  <input name="password" type={showPw ? "text" : "password"} required placeholder="••••••••" autoComplete="new-password" />
+                  <button type="button" className="plp-pw-toggle" onClick={() => setShowPw((v) => !v)}>
+                    {showPw ? "Hide" : "Show"}
+                  </button>
+                </div>
+                </div>
+              )}
+              <button type="submit" className="plp-btn" style={{ width: "100%" }} disabled={authBusy}>
+                {codeMode === "recovery" ? "Reset password" : "Verify and continue"}
+              </button>
+              {codeMsg && <div className="plp-modal-msg">{codeMsg}</div>}
+            </form>
+            <div className="plp-switch-line">
+              Didn't get it? {cooldown > 0 ? <span>Resend in {cooldown}s</span> : <a onClick={handleResend}>Resend code</a>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {openModalId === "signout" && (
+        <div className="plp-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+          <div className="plp-modal">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <h3>Sign out?</h3>
+            <div className="plp-sub">You'll need to sign in again to place or track orders.</div>
+            <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
+              <button
+                className="plp-btn"
+                style={{ flex: 1, background: "transparent", border: "1px solid var(--gold-line)", color: "var(--cream)" }}
+                onClick={closeModal}
+              >
+                Stay signed in
+              </button>
+              <button className="plp-btn" style={{ flex: 1 }} onClick={confirmSignout} disabled={authBusy}>
+                Sign out
+              </button>
             </div>
           </div>
         </div>

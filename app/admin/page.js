@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "../../lib/supabase";
+import { supabase, setRemember } from "../../lib/supabase";
 
 export default function AdminPage() {
   const [status, setStatus] = useState("loading"); // loading | signedout | denied | error | ready
@@ -41,7 +41,12 @@ export default function AdminPage() {
     setOrders((list) => list.map((o) => (o.order_no === orderNo ? { ...o, status: newStatus } : o)));
   };
 
-  const signOut = async () => { await supabase.auth.signOut(); load(); };
+  const signOut = async () => {
+    if (!window.confirm("Sign out of the admin panel?")) return;
+    await supabase.auth.signOut();
+    setRemember(false);
+    load();
+  };
 
   const messages = {
     loading: "Loading…",
