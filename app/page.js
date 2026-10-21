@@ -2,16 +2,148 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { supabase, setRemember, rememberExpired } from "../lib/supabase";
+import { useRouter } from "next/navigation";
+
+// true  = visitors see the login screen first (website and APK)
+// false = anyone can browse the store without signing in
+const REQUIRE_LOGIN = true;
 
 const MAX_PER_ITEM = 5; // bottles of the same fragrance per order
 const MAX_PER_ORDER = 10; // bottles in total per order
 const STATUS_LABEL = { pending: "Order received", paid: "Paid", shipped: "Shipped", delivered: "Delivered", cancelled: "Cancelled" };
 
 /* ---------------- Account rules ---------------- */
-const ALLOWED_EMAIL = /^[^\s@]+@(gmail\.com|tip\.edu\.ph)$/i; // only these two domains, nothing else
-const EMAIL_RULE = "Please use your @gmail.com or @tip.edu.ph email address.";
+// Only these email providers can sign up. Typos and unknown domains are rejected.
+// Keep this list identical to the one in supabase/email-domains.sql.
+const ALLOWED_DOMAINS = [
+  "gmail.com", "yahoo.com", "yahoo.com.ph", "outlook.com", "outlook.ph", "hotmail.com",
+  "live.com", "icloud.com", "proton.me", "protonmail.com", "tip.edu.ph",
+];
+const ALLOWED_EMAIL = new RegExp("^[^\\s@]+@(" + ALLOWED_DOMAINS.map((d) => d.replace(/\./g, "\\.")).join("|") + ")$", "i");
+
+// "Did you mean ...?" for near-misses such as gmial.com, gmail.con or tip.edu.pg
+const editDistance = (a, b) => {
+  const row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return row[b.length];
+};
+const suggestEmail = (email) => {
+  const at = email.lastIndexOf("@");
+  if (at < 1) return "";
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1).toLowerCase();
+  let best = "";
+  let bestDistance = 99;
+  for (const d of ALLOWED_DOMAINS) {
+    const dist = editDistance(domain, d);
+    const limit = d.length >= 8 ? 2 : 1; // short domains must be very close, to avoid wrong guesses
+    if (dist > 0 && dist <= limit && dist < bestDistance) {
+      best = d;
+      bestDistance = dist;
+    }
+  }
+  return best ? local + "@" + best : "";
+};
+const EMAIL_RULE = "Please use a valid email from Gmail, Outlook, Yahoo, iCloud, Proton or @tip.edu.ph.";
 const PASSWORD_RULE = "Password needs 8+ characters with at least one letter and one number.";
 const validPassword = (p) => p.length >= 8 && /[A-Za-z]/.test(p) && /\d/.test(p);
+
+/* ---------------- Fields that give feedback while you type ---------------- */
+function EmailField({ defaultValue = "", autoFocus = false }) {
+  const [value, setValue] = useState(defaultValue);
+  const [touched, setTouched] = useState(false); // becomes true when you leave the field
+  const v = value.trim();
+  const ok = ALLOWED_EMAIL.test(v);
+  let msg = "";
+  let kind = "";
+  if (ok) { msg = "Email looks good."; kind = "ok"; }
+  else if (touched && v === "") { msg = "Please enter your email."; kind = "bad"; }
+  else if (touched) { msg = EMAIL_RULE; kind = "bad"; }
+  else if (v.includes("@")) { msg = "Use a supported email (Gmail, Outlook, Yahoo, iCloud, Proton or @tip.edu.ph)."; kind = "hint"; }
+  const suggestion = kind === "bad" ? suggestEmail(v) : "";
+  return (
+    <div className="plp-field">
+      <label>Email</label>
+      <input
+        name="email"
+        type="email"
+        required
+        placeholder="name@gmail.com"
+        autoComplete="email"
+        autoFocus={autoFocus}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => setTouched(true)}
+        className={kind === "bad" ? "plp-invalid" : kind === "ok" ? "plp-valid" : ""}
+        aria-invalid={kind === "bad"}
+      />
+      {suggestion ? (
+        <div className="plp-fieldmsg bad">
+          Did you mean <a onClick={() => setValue(suggestion)}>{suggestion}</a>?
+        </div>
+      ) : (
+        msg && <div className={"plp-fieldmsg " + kind}>{msg}</div>
+      )}
+    </div>
+  );
+}
+
+function PasswordField({ label = "Password", autoComplete, autoFocus = false, showPw, onToggle, showRules = false }) {
+  const [value, setValue] = useState("");
+  return (
+    <>
+      <div className="plp-field">
+        <label>{label}</label>
+        <div className="plp-pw">
+          <input
+            name="password"
+            type={showPw ? "text" : "password"}
+            required
+            placeholder="••••••••"
+            autoComplete={autoComplete}
+            autoFocus={autoFocus}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+          <button type="button" className="plp-pw-toggle" onClick={onToggle}>
+            {showPw ? "Hide" : "Show"}
+          </button>
+        </div>
+      </div>
+      {showRules && (
+        <div className="plp-rules">
+          <span className={value.length >= 8 ? "ok" : ""}>8+ characters</span>
+          <span className={/[A-Za-z]/.test(value) ? "ok" : ""}>a letter</span>
+          <span className={/\d/.test(value) ? "ok" : ""}>a number</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ---------------- Delivery details (profile and checkout share these fields and checks) ---------------- */
+const readAddress = (form) => {
+  const fd = new FormData(form);
+  const v = (k) => String(fd.get(k) || "").trim();
+  return { full_name: v("full_name"), phone: v("phone"), address_line: v("address_line"), city: v("city"), province: v("province"), postal_code: v("postal_code") };
+};
+const addressError = (a) => {
+  if (a.full_name.length < 2) return "Please enter your full name.";
+  if (!/^[-0-9+() ]{7,20}$/.test(a.phone)) return "Please enter a valid phone number.";
+  if (a.address_line.length < 5) return "Please enter your street address.";
+  if (a.city.length < 2) return "Please enter your city or municipality.";
+  if (a.province.length < 2) return "Please enter your province.";
+  if (!/^[A-Za-z0-9 -]{3,10}$/.test(a.postal_code)) return "Please enter a valid postal code.";
+  return "";
+};
 
 const friendlyAuthError = (error) => {
   const m = (error?.message || "").toLowerCase();
@@ -19,6 +151,8 @@ const friendlyAuthError = (error) => {
   if (m.includes("database error saving new user")) return EMAIL_RULE; // blocked by the database domain rule
   if (m.includes("error sending") || m.includes("sending confirmation") || m.includes("sending recovery"))
     return "We couldn't send your code right now. Please try again in a few minutes.";
+  if (m.includes("banned")) return "This account has been disabled. Please contact support.";
+  if (m.includes("different from the old password")) return "Your new password must be different from your old one.";
   if (m.includes("already registered")) return "That email is already registered. Try signing in.";
   if (m.includes("rate limit") || (m.includes("after") && m.includes("seconds"))) return "Too many requests. Please wait a minute and try again.";
   return error?.message || "Something went wrong. Please try again.";
@@ -53,6 +187,55 @@ const PRODUCTS = [
   { name: "Ambre Imperial", badge: "Limited", notes: "Vanilla, cedar, saffron", price: 192 },
   { name: "Soie Blanche", badge: null, notes: "Jasmine, musk, white tea", price: 146 },
 ];
+
+// Login-page slideshow (5 slides). When you have the pictures, put the PNGs in the "public/products" folder
+// and set image, for example: image: "/products/noir-royal.png". Until then a placeholder is shown.
+const FEATURED = [
+  ...PRODUCTS.slice(0, 4).map((p) => ({ name: p.name, note: p.notes, price: p.price, image: null })),
+  { name: "New arrival", note: "Coming soon", price: null, image: null },
+].slice(0, 5);
+
+function FeaturedSlideshow({ items, crest }) {
+  const [i, setI] = useState(0);
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    if (paused) return;
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const t = setInterval(() => setI((n) => (n + 1) % items.length), 4000);
+    return () => clearInterval(t);
+  }, [paused, items.length]);
+  return (
+    <div className="plp-show" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
+      <div className="plp-show-label">Featured fragrances</div>
+      <div className="plp-show-stage">
+        {items.map((p, n) => (
+          <div key={p.name} className={"plp-slide" + (n === i ? " on" : "")}>
+            <div className="plp-slide-art">
+              {p.image ? (
+                <img src={p.image} alt={p.name} />
+              ) : (
+                <div className="plp-slide-ph">
+                  <img src={crest} alt="" />
+                  <span>Photo coming soon</span>
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="plp-slide-name">{p.name}</div>
+              <div className="plp-slide-note">{p.note}</div>
+              {p.price != null && <div className="plp-slide-price">${p.price}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="plp-dots">
+        {items.map((p, n) => (
+          <button key={p.name} aria-label={"Show " + p.name} className={n === i ? "on" : ""} onClick={() => setI(n)} />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const BLOG_POSTS = [
   {
@@ -104,6 +287,15 @@ export default function PrestigeLeParfum() {
   const [newsletterError, setNewsletterError] = useState(false);
   const [user, setUser] = useState(null); // signed-in Supabase user (or null)
   const [role, setRole] = useState(null); // 'customer' | 'admin'
+  const [profile, setProfile] = useState({}); // name, phone and address saved on the account
+  const [profileMsg, setProfileMsg] = useState("");
+  const [checkoutMsg, setCheckoutMsg] = useState("");
+
+  // Admins never use the customer storefront: as soon as we know the account is an admin, go to /admin.
+  const router = useRouter();
+  useEffect(() => {
+    if (role === "admin") router.replace("/admin");
+  }, [role, router]);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false); // mobile menu
   const [showPw, setShowPw] = useState(false); // show/hide password
@@ -113,6 +305,28 @@ export default function PrestigeLeParfum() {
   const [forgotMsg, setForgotMsg] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [cooldown, setCooldown] = useState(0); // seconds until "Resend code" works again
+  const [resetPending, setResetPending] = useState(false); // code verified, new password not chosen yet
+  const [newpassMsg, setNewpassMsg] = useState("");
+  const [signinPrefill, setSigninPrefill] = useState(""); // email pre-filled on the sign-in form after a reset
+
+  // If someone closes the popup before choosing a new password, they are NOT left signed in.
+  useEffect(() => {
+    if (resetPending && openModalId !== "newpass") {
+      setResetPending(false);
+      supabase.auth.signOut();
+      setRemember(false);
+    }
+  }, [openModalId, resetPending]);
+
+  /* ---------------- Login first ---------------- */
+  const [authReady, setAuthReady] = useState(false); // becomes true once we know if someone is already signed in
+  // "booting": we don't know yet who is here (or the role is still loading), so show only the logo
+  const booting = REQUIRE_LOGIN && (!authReady || (user && role === null));
+  // "gated": nobody is signed in (or a password reset is half done), so show only the login panel
+  const gated = REQUIRE_LOGIN && authReady && (!user || resetPending);
+  useEffect(() => {
+    if (gated && openModalId === null) setOpenModalId("signin");
+  }, [gated, openModalId]);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -123,20 +337,34 @@ export default function PrestigeLeParfum() {
   /* ---------------- Auth: keep `user` and `role` in sync with Supabase ---------------- */
   useEffect(() => {
     const loadRole = async (u) => {
-      if (!u) return setRole(null);
-      const { data } = await supabase.from("profiles").select("role").eq("id", u.id).single();
+      if (!u) {
+        setRole(null);
+        setProfile({});
+        return;
+      }
+      const { data } = await supabase
+        .from("profiles")
+        .select("role, full_name, phone, address_line, city, province, postal_code")
+        .eq("id", u.id)
+        .single();
       setRole(data?.role ?? "customer");
+      setProfile(data || {});
     };
     if (rememberExpired()) {
       // "Remember me" lasted 30 days: sign out so the user logs in again
       supabase.auth.signOut();
       setRemember(false);
     }
+    const bootTimer = setTimeout(() => setAuthReady(true), 4000); // safety net if Supabase is unreachable
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthReady(true);
       setUser(session?.user ?? null);
       setTimeout(() => loadRole(session?.user), 0); // setTimeout avoids a known Supabase deadlock
     });
-    return () => sub.subscription.unsubscribe();
+    return () => {
+      clearTimeout(bootTimer);
+      sub.subscription.unsubscribe();
+    };
   }, []);
   const [toast, setToast] = useState({ show: false, text: "" });
   const toastTimer = useRef(null);
@@ -200,11 +428,12 @@ export default function PrestigeLeParfum() {
   };
 
   const cartCount = cart.reduce((sum, i) => sum + i.qty, 0);
+  const orderTotal = cart.reduce((sum, i) => sum + i.price * i.qty, 0);
   const cartSubtotal = cart.reduce((sum, i) => sum + i.qty * i.price, 0);
 
-  const handleCheckout = async (e) => {
+  /* ---------------- Checkout: review order + delivery address, then place the order ---------------- */
+  const handleCheckout = (e) => {
     e.preventDefault();
-    if (checkoutLoading) return;
     if (cart.length === 0) {
       showToast("Your bag is empty");
       return;
@@ -215,23 +444,101 @@ export default function PrestigeLeParfum() {
       showToast("Please sign in to check out");
       return;
     }
+    setCheckoutMsg("");
+    setCartOpen(false);
+    openModal("checkout");
+  };
+
+  const saveProfile = (a) =>
+    supabase.rpc("update_profile", {
+      p_full_name: a.full_name,
+      p_phone: a.phone,
+      p_address_line: a.address_line,
+      p_city: a.city,
+      p_province: a.province,
+      p_postal_code: a.postal_code,
+    });
+
+  const handlePlaceOrder = async (e) => {
+    e.preventDefault();
+    if (checkoutLoading) return;
+    const form = e.target;
+    const a = readAddress(form);
+    const err = addressError(a);
+    if (err) return setCheckoutMsg(err);
+    const saveAsDefault = new FormData(form).get("save_default") === "on";
+
     setCheckoutLoading(true);
+    setCheckoutMsg("");
     // Only names + quantities are sent; the database looks up the real prices.
     const { data, error } = await supabase.rpc("place_order", {
       p_items: cart.map((i) => ({ name: i.name, qty: i.qty })),
+      p_shipping: a,
     });
-    setCheckoutLoading(false);
     if (error) {
-      showToast(error.message);
-      return;
+      setCheckoutLoading(false);
+      return setCheckoutMsg(error.message);
     }
+    if (saveAsDefault) {
+      await saveProfile(a);
+      setProfile((p) => ({ ...p, ...a }));
+    }
+    setCheckoutLoading(false);
     setCart([]);
-    setCartOpen(false);
     showInfo(
-      "Order confirmed",
-      `Thank you! Your order ${data.order_no} has been placed. Total: $${data.total}.`
+      "Order placed",
+      `Thank you! Your order ${data.order_no} has been placed and is awaiting confirmation. Total: $${data.total}. We'll deliver to ${a.address_line}, ${a.city}.`
     );
   };
+
+  /* ---------------- Profile ---------------- */
+  const handleSaveProfile = async (e) => {
+    e.preventDefault();
+    if (authBusy) return;
+    const a = readAddress(e.target);
+    const err = addressError(a);
+    if (err) return setProfileMsg(err);
+    setAuthBusy(true);
+    setProfileMsg("Saving…");
+    const { error } = await saveProfile(a);
+    setAuthBusy(false);
+    if (error) return setProfileMsg(error.message);
+    setProfile((p) => ({ ...p, ...a }));
+    setProfileMsg("");
+    closeModal();
+    showToast("Profile saved.");
+  };
+
+  const renderAddressFields = (p) => (
+    <>
+      <div className="plp-field">
+        <label>Full name</label>
+        <input name="full_name" type="text" defaultValue={p.full_name || ""} placeholder="Jane Doe" autoComplete="name" />
+      </div>
+      <div className="plp-field">
+        <label>Phone</label>
+        <input name="phone" type="tel" defaultValue={p.phone || ""} placeholder="0917 123 4567" autoComplete="tel" />
+      </div>
+      <div className="plp-field">
+        <label>Address</label>
+        <input name="address_line" type="text" defaultValue={p.address_line || ""} placeholder="House no., street, barangay" autoComplete="street-address" />
+      </div>
+      <div className="plp-two">
+        <div className="plp-field">
+          <label>City / Municipality</label>
+          <input name="city" type="text" defaultValue={p.city || ""} autoComplete="address-level2" />
+        </div>
+        <div className="plp-field">
+          <label>Province</label>
+          <input name="province" type="text" defaultValue={p.province || ""} autoComplete="address-level1" />
+        </div>
+      </div>
+      <div className="plp-field">
+        <label>Postal code</label>
+        <input name="postal_code" type="text" inputMode="numeric" maxLength={10} defaultValue={p.postal_code || ""} autoComplete="postal-code" />
+      </div>
+    </>
+  );
 
   /* ---------------- Modals ---------------- */
   const openModal = (id) => setOpenModalId(id);
@@ -299,6 +606,7 @@ export default function PrestigeLeParfum() {
       }
       return setSigninMsg(friendlyAuthError(error));
     }
+    setSigninPrefill("");
     setSigninMsg("Signed in. Welcome back!");
     setTimeout(() => {
       closeModal();
@@ -343,35 +651,52 @@ export default function PrestigeLeParfum() {
   const handleVerifyCode = async (e) => {
     e.preventDefault();
     if (authBusy) return;
-    const fd = new FormData(e.target);
-    const code = String(fd.get("code")).replace(/\D/g, "");
-    const newPassword = String(fd.get("password") || "");
+    const code = String(new FormData(e.target).get("code")).replace(/\D/g, "");
     if (code.length !== 6) return setCodeMsg("Enter the 6-digit code from your email.");
-    if (codeMode === "recovery" && !validPassword(newPassword)) return setCodeMsg(PASSWORD_RULE);
 
     setAuthBusy(true);
     setCodeMsg("Checking your code…");
-    setRemember(true); // verified users stay signed in for 30 days
+    // New accounts stay signed in for 30 days; a password reset must NOT leave anyone signed in.
+    setRemember(codeMode !== "recovery");
     const { error } = await supabase.auth.verifyOtp({
       email: authEmail,
       token: code,
       type: codeMode === "recovery" ? "recovery" : "signup",
     });
+    setAuthBusy(false);
+    if (error) return setCodeMsg("That code is incorrect or has expired. You can request a new one below.");
+
+    setCodeMsg("");
+    if (codeMode === "recovery") {
+      setNewpassMsg("");
+      setResetPending(true);
+      return openModal("newpass"); // step 2: choose the new password
+    }
+    closeModal();
+    showToast("Email confirmed. Welcome!");
+  };
+
+  const handleNewPassword = async (e) => {
+    e.preventDefault();
+    if (authBusy) return;
+    const password = String(new FormData(e.target).get("password"));
+    if (!validPassword(password)) return setNewpassMsg(PASSWORD_RULE);
+
+    setAuthBusy(true);
+    setNewpassMsg("Saving your new password…");
+    const { error } = await supabase.auth.updateUser({ password });
     if (error) {
       setAuthBusy(false);
-      return setCodeMsg("That code is incorrect or has expired. You can request a new one below.");
+      return setNewpassMsg(friendlyAuthError(error));
     }
-    if (codeMode === "recovery") {
-      const { error: pwError } = await supabase.auth.updateUser({ password: newPassword });
-      if (pwError) {
-        setAuthBusy(false);
-        return setCodeMsg(friendlyAuthError(pwError));
-      }
-    }
+    setResetPending(false);
+    await supabase.auth.signOut(); // finish signed out: sign in with the new password
+    setRemember(false);
     setAuthBusy(false);
-    setCodeMsg("");
-    closeModal();
-    showToast(codeMode === "recovery" ? "Password updated. You're signed in!" : "Email confirmed. Welcome!");
+    setNewpassMsg("");
+    setSigninPrefill(authEmail);
+    openModal("signin");
+    setSigninMsg("Password updated. Please sign in with your new password.");
   };
 
   const handleResend = async () => {
@@ -407,6 +732,7 @@ export default function PrestigeLeParfum() {
     setRemember(false);
     setAuthBusy(false);
     closeModal();
+    setCart([]);
     showToast("Signed out");
   };
 
@@ -467,8 +793,32 @@ export default function PrestigeLeParfum() {
 
   const crest = CrestDataUri();
 
+  // Shown for a moment while an admin is being sent to /admin (all hooks are above this line)
+  if (role === "admin") {
+    return (
+      <div style={{ minHeight: "100vh", background: "#121210", color: "#c9c3b4", display: "grid", placeItems: "center",
+        fontFamily: "'Jost', sans-serif", fontSize: 12, letterSpacing: "0.25em", textTransform: "uppercase" }}>
+        Opening admin…
+      </div>
+    );
+  }
+
   return (
-    <div className="plp-root">
+    <div className={"plp-root" + (booting || gated ? " plp-gated" : "")}>
+      {booting && (
+        <div className="plp-gate-brand">
+          <img src={crest} alt="Prestige Le Parfum" />
+          <div>Prestige Le Parfum</div>
+        </div>
+      )}
+      {gated && (
+        <div className="plp-gate-hero">
+          <img className="plp-gate-logo" src={crest} alt="Prestige Le Parfum crest" />
+          <h1 className="plp-gate-title">Prestige<br />Le Parfum</h1>
+          <p className="plp-gate-tag">Rare ingredients, hand-finished bottles.</p>
+          <FeaturedSlideshow items={FEATURED} crest={crest} />
+        </div>
+      )}
       <style>{`
         .plp-root{
           --ink:#121210; --panel:#1a1a17; --panel2:#201f1b;
@@ -633,6 +983,54 @@ export default function PrestigeLeParfum() {
 
         /* MOBILE (phones and small tablets). Desktop layout is unchanged. */
         .plp-root{-webkit-tap-highlight-color:transparent;}
+
+        /* LOGIN FIRST: while nobody is signed in, hide the whole store and show only the login panel */
+        .plp-gated > *:not(style):not(.plp-overlay):not(.plp-gate-brand):not(.plp-gate-hero){display:none !important;}
+        .plp-gated .plp-modal-close{display:none;}
+        .plp-gated .plp-modal::before{display:none;}
+        .plp-gate-brand{position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+          color:var(--cream); font-family:'Cormorant Garamond',serif; font-size:22px; letter-spacing:0.3em; text-transform:uppercase;}
+        .plp-gate-brand img{height:64px;}
+
+        /* login screen: logo + big title + slideshow on the left, login panel on the right */
+        .plp-gate-hero{position:fixed; top:0; left:0; bottom:0; width:46%; z-index:5; overflow-y:auto;
+          padding:6vh 3vw 5vh 5vw; display:flex; flex-direction:column; justify-content:center;
+          background:radial-gradient(120% 90% at 0% 0%, rgba(201,162,75,0.10), transparent 60%);}
+        .plp-gate-logo{height:76px; width:auto; align-self:flex-start; margin-bottom:26px;}
+        .plp-gate-title{font-family:'Cormorant Garamond',serif; font-weight:500; font-size:clamp(48px,6.2vw,92px);
+          line-height:0.95; letter-spacing:0.02em; text-transform:uppercase; margin:0 0 14px; color:var(--cream);}
+        .plp-gate-tag{font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:var(--gold-soft); margin:0 0 4vh;}
+        .plp-show{max-width:440px;}
+        .plp-show-label{font-size:10px; letter-spacing:0.3em; text-transform:uppercase; color:var(--stone); margin-bottom:12px;}
+        .plp-show-stage{position:relative; height:170px;}
+        .plp-slide{position:absolute; inset:0; display:flex; gap:18px; align-items:center; opacity:0; transform:translateX(14px);
+          transition:opacity .6s, transform .6s; pointer-events:none;}
+        .plp-slide.on{opacity:1; transform:none; pointer-events:auto;}
+        .plp-slide-art{flex:0 0 130px; height:170px; border:1px solid var(--gold-line); overflow:hidden;
+          background:linear-gradient(160deg,#1c1c18,#121210); display:flex; align-items:center; justify-content:center;}
+        .plp-slide-art > img{width:100%; height:100%; object-fit:cover;}
+        .plp-slide-ph{display:flex; flex-direction:column; align-items:center; gap:10px; padding:8px; text-align:center;
+          font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:var(--stone);}
+        .plp-slide-ph img{width:44px; opacity:.55;}
+        .plp-slide-name{font-family:'Cormorant Garamond',serif; font-size:28px; color:var(--cream);}
+        .plp-slide-note{font-size:13px; color:var(--cream-dim); margin-top:4px;}
+        .plp-slide-price{font-family:'Cormorant Garamond',serif; font-size:22px; color:var(--gold-soft); margin-top:10px;}
+        .plp-dots{display:flex; gap:10px; margin-top:12px;}
+        .plp-dots button{width:28px; height:18px; padding:8px 0; border:none; background:var(--gold-line); background-clip:content-box; cursor:pointer;}
+        .plp-dots button.on{background:var(--gold); background-clip:content-box;}
+        @media (prefers-reduced-motion:reduce){ .plp-slide{transition:none;} }
+        @media (min-width:981px){
+          .plp-gated .plp-overlay{left:46%; background:transparent; backdrop-filter:none; -webkit-backdrop-filter:none;}
+        }
+        @media (max-width:980px){
+          .plp-gate-hero{width:100%; bottom:auto; flex-direction:row; align-items:center; justify-content:flex-start; gap:14px;
+            padding:max(14px, env(safe-area-inset-top)) 20px 12px; background:none; overflow:visible;}
+          .plp-gate-logo{height:42px; margin:0;}
+          .plp-gate-title{font-size:clamp(15px,4.6vw,22px); margin:0; letter-spacing:0.12em;}
+          .plp-gate-title br,.plp-gate-tag,.plp-show{display:none;}
+          .plp-gated .plp-overlay{top:78px;}
+          .plp-gated .plp-modal{max-height:calc(100dvh - 100px);}
+        }
         .plp-root a,.plp-root button{touch-action:manipulation;}
         .plp-header{padding-top:env(safe-area-inset-top, 0px);}
         .plp-footer{padding-bottom:calc(30px + env(safe-area-inset-bottom, 0px));}
@@ -675,7 +1073,14 @@ export default function PrestigeLeParfum() {
           .plp-section{padding:56px 20px;}
           .plp-section-head{flex-direction:column; align-items:flex-start; gap:14px; margin-bottom:30px;}
           .plp-section-head h2{font-size:30px;}
-          .plp-grid{grid-template-columns:1fr; gap:20px;}
+          /* swipe left and right through the cards (the page itself still scrolls up and down) */
+          .plp-grid,.plp-blog-grid{
+            display:flex; gap:16px; overflow-x:auto; overflow-y:hidden;
+            scroll-snap-type:x mandatory; -webkit-overflow-scrolling:touch; scrollbar-width:none;
+            margin-left:-20px; margin-right:-20px; padding:0 20px 14px; scroll-padding:0 20px;
+          }
+          .plp-grid::-webkit-scrollbar,.plp-blog-grid::-webkit-scrollbar{display:none;}
+          .plp-grid > *,.plp-blog-grid > *{flex:0 0 78%; scroll-snap-align:start;}
           .plp-card-media{height:200px;}
           .plp-split-text{padding:44px 24px;}
           .plp-split-text h2{font-size:28px;}
@@ -733,6 +1138,22 @@ export default function PrestigeLeParfum() {
         .plp-hint{font-size:12px; color:var(--stone); margin:-6px 0 18px;}
         .plp-field input.plp-code{text-align:center; letter-spacing:0.5em; font-size:22px;}
         .plp-btn:disabled{opacity:.6; cursor:wait;}
+        .plp-two{display:grid; grid-template-columns:1fr 1fr; gap:0 12px;}
+        @media (max-width:600px){ .plp-two{grid-template-columns:1fr;} }
+        .plp-fieldmsg{font-size:12px; margin-top:6px;}
+        .plp-fieldmsg.bad{color:#e0907f;}
+        .plp-fieldmsg.ok{color:#8fc79a;}
+        .plp-fieldmsg.hint{color:var(--stone);}
+        .plp-fieldmsg a{color:var(--gold-soft); cursor:pointer; text-decoration:underline;}
+        .plp-field input.plp-invalid{border-color:#e0907f;}
+        .plp-field input.plp-valid{border-color:#8fc79a;}
+        .plp-rules{display:flex; gap:6px 16px; flex-wrap:wrap; font-size:12px; color:var(--stone); margin:-6px 0 18px;}
+        .plp-rules span::before{content:"○ ";}
+        .plp-rules span.ok{color:#8fc79a;}
+        .plp-rules span.ok::before{content:"✓ ";}
+        .plp-summary{border:1px solid var(--gold-line); padding:14px 16px; margin:18px 0 22px; font-size:13px; color:var(--cream-dim);}
+        .plp-summary-row{display:flex; justify-content:space-between; gap:12px; padding:5px 0;}
+        .plp-summary-total{border-top:1px solid var(--gold-line); margin-top:8px; padding-top:12px; color:var(--cream); font-size:15px;}
         .plp-modal-msg{font-size:12.5px; color:var(--gold-soft); margin-top:14px;}
         .plp-switch-line{font-size:12px; color:var(--stone); margin-top:18px; text-align:center;}
         .plp-switch-line a{color:var(--gold-soft); cursor:pointer;}
@@ -776,10 +1197,7 @@ export default function PrestigeLeParfum() {
             <h3>Sign in</h3>
             <div className="plp-sub">Access your account, orders and wishlist.</div>
             <form onSubmit={handleSignin} noValidate>
-              <div className="plp-field">
-                <label>Email</label>
-                <input name="email" type="email" required placeholder="name@gmail.com" autoComplete="email" />
-              </div>
+              <EmailField defaultValue={signinPrefill} />
               <div className="plp-field">
                 <label>Password</label>
                 <div className="plp-pw">
@@ -810,26 +1228,14 @@ export default function PrestigeLeParfum() {
           <div className="plp-modal">
             <button className="plp-modal-close" onClick={closeModal}>&times;</button>
             <h3>Create account</h3>
-            <div className="plp-sub">Use your @gmail.com or @tip.edu.ph email. We'll send you a 6-digit code to verify it.</div>
+            <div className="plp-sub">Use a valid Gmail, Outlook, Yahoo, iCloud, Proton or @tip.edu.ph email. We'll send you a 6-digit code to verify it.</div>
             <form onSubmit={handleCreateAccount} noValidate>
               <div className="plp-field">
                 <label>Full name</label>
                 <input name="full_name" type="text" required placeholder="Jane Doe" autoComplete="name" />
               </div>
-              <div className="plp-field">
-                <label>Email</label>
-                <input name="email" type="email" required placeholder="name@gmail.com" autoComplete="email" />
-              </div>
-              <div className="plp-field">
-                <label>Password</label>
-                <div className="plp-pw">
-                  <input name="password" type={showPw ? "text" : "password"} required placeholder="••••••••" autoComplete="new-password" />
-                  <button type="button" className="plp-pw-toggle" onClick={() => setShowPw((v) => !v)}>
-                    {showPw ? "Hide" : "Show"}
-                  </button>
-                </div>
-              </div>
-              <div className="plp-hint">8+ characters, with at least one letter and one number.</div>
+              <EmailField />
+              <PasswordField autoComplete="new-password" showPw={showPw} onToggle={() => setShowPw((v) => !v)} showRules />
               <button type="submit" className="plp-btn" style={{ width: "100%" }} disabled={authBusy}>Create account</button>
               {createMsg && <div className="plp-modal-msg">{createMsg}</div>}
             </form>
@@ -847,10 +1253,7 @@ export default function PrestigeLeParfum() {
             <h3>Forgot password</h3>
             <div className="plp-sub">Enter your email and we'll send you a 6-digit code.</div>
             <form onSubmit={handleForgot} noValidate>
-              <div className="plp-field">
-                <label>Email</label>
-                <input name="email" type="email" required placeholder="name@gmail.com" autoComplete="email" autoFocus />
-              </div>
+              <EmailField autoFocus />
               <button type="submit" className="plp-btn" style={{ width: "100%" }} disabled={authBusy}>Send code</button>
               {forgotMsg && <div className="plp-modal-msg">{forgotMsg}</div>}
             </form>
@@ -884,25 +1287,29 @@ export default function PrestigeLeParfum() {
                   autoFocus
                 />
               </div>
-              {codeMode === "recovery" && (
-                <div className="plp-field">
-                  <label>New password</label>
-                  <div className="plp-pw">
-                  <input name="password" type={showPw ? "text" : "password"} required placeholder="••••••••" autoComplete="new-password" />
-                  <button type="button" className="plp-pw-toggle" onClick={() => setShowPw((v) => !v)}>
-                    {showPw ? "Hide" : "Show"}
-                  </button>
-                </div>
-                </div>
-              )}
               <button type="submit" className="plp-btn" style={{ width: "100%" }} disabled={authBusy}>
-                {codeMode === "recovery" ? "Reset password" : "Verify and continue"}
+                {codeMode === "recovery" ? "Verify code" : "Verify and continue"}
               </button>
               {codeMsg && <div className="plp-modal-msg">{codeMsg}</div>}
             </form>
             <div className="plp-switch-line">
               Didn't get it? {cooldown > 0 ? <span>Resend in {cooldown}s</span> : <a onClick={handleResend}>Resend code</a>}
             </div>
+          </div>
+        </div>
+      )}
+
+      {openModalId === "newpass" && (
+        <div className="plp-overlay" {...overlayProps}>
+          <div className="plp-modal">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <h3>Choose a new password</h3>
+            <div className="plp-sub">Your code is verified. Pick a new password for {authEmail}.</div>
+            <form onSubmit={handleNewPassword} noValidate>
+              <PasswordField label="New password" autoComplete="new-password" autoFocus showPw={showPw} onToggle={() => setShowPw((v) => !v)} showRules />
+              <button type="submit" className="plp-btn" style={{ width: "100%" }} disabled={authBusy}>Update password</button>
+              {newpassMsg && <div className="plp-modal-msg">{newpassMsg}</div>}
+            </form>
           </div>
         </div>
       )}
@@ -925,6 +1332,57 @@ export default function PrestigeLeParfum() {
                 Sign out
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {openModalId === "checkout" && (
+        <div className="plp-overlay" {...overlayProps}>
+          <div className="plp-modal">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <h3>Checkout</h3>
+            <div className="plp-sub">Review your order and confirm where to deliver it.</div>
+            <div className="plp-summary">
+              {cart.map((i) => (
+                <div className="plp-summary-row" key={i.name}>
+                  <span>{i.name} &times; {i.qty}</span>
+                  <span>${i.price * i.qty}</span>
+                </div>
+              ))}
+              <div className="plp-summary-row plp-summary-total">
+                <span>Total</span>
+                <span>${orderTotal}</span>
+              </div>
+            </div>
+            <form onSubmit={handlePlaceOrder} noValidate>
+              {renderAddressFields(profile)}
+              <label className="plp-check" style={{ margin: "2px 0 18px" }}>
+                <input type="checkbox" name="save_default" defaultChecked /> Save as my default address
+              </label>
+              <button type="submit" className="plp-btn" style={{ width: "100%" }} disabled={checkoutLoading}>
+                {checkoutLoading ? "Placing order…" : "Place order"}
+              </button>
+              {checkoutMsg && <div className="plp-modal-msg">{checkoutMsg}</div>}
+            </form>
+          </div>
+        </div>
+      )}
+
+      {openModalId === "profile" && (
+        <div className="plp-overlay" {...overlayProps}>
+          <div className="plp-modal">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <h3>Your profile</h3>
+            <div style={{ height: 16 }} />
+            <form onSubmit={handleSaveProfile} noValidate>
+              <div className="plp-field">
+                <label>Email</label>
+                <input type="email" value={user?.email || ""} disabled readOnly style={{ opacity: 0.6 }} />
+              </div>
+              {renderAddressFields(profile)}
+              <button type="submit" className="plp-btn" style={{ width: "100%" }} disabled={authBusy}>Save profile</button>
+              {profileMsg && <div className="plp-modal-msg">{profileMsg}</div>}
+            </form>
           </div>
         </div>
       )}
@@ -1020,6 +1478,7 @@ export default function PrestigeLeParfum() {
             <a onClick={() => scrollToSection("storySection")}>Collections</a>
             <a onClick={() => scrollToSection("blogSection")}>Blog</a>
             <a onClick={() => openModal("tracking")}>Order Tracking</a>
+            {user && <a onClick={() => openModal("profile")}>Profile</a>}
           </div>
           <div className="plp-nav-icons">
             {user ? (

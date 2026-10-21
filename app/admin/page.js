@@ -19,7 +19,7 @@ export default function AdminPage() {
     // The database itself only returns rows to admins (row-level security).
     const { data, error } = await supabase
       .from("orders")
-      .select("order_no, status, total, created_at, profiles(email, full_name), order_items(product_name, qty, unit_price)")
+      .select("order_no, status, total, created_at, ship_name, ship_phone, ship_address, ship_city, ship_province, ship_postal, profiles(email, full_name), order_items(product_name, qty, unit_price)")
       .order("created_at", { ascending: false });
     if (error) { setError(error.message); return setStatus("error"); }
     setOrders(data);
@@ -105,13 +105,21 @@ export default function AdminPage() {
           <div className="adm-scroll">
             <table>
               <thead>
-                <tr><th>Order</th><th>Customer</th><th>Items</th><th>Total</th><th>Status</th><th>Placed</th></tr>
+                <tr><th>Order</th><th>Customer / Ship to</th><th>Items</th><th>Total</th><th>Status</th><th>Placed</th></tr>
               </thead>
               <tbody>
                 {orders.map((o) => (
                   <tr key={o.order_no}>
                     <td className="no">{o.order_no}</td>
-                    <td>{o.profiles?.full_name || "—"}<br />{o.profiles?.email}</td>
+                    <td>
+                      {o.ship_name || o.profiles?.full_name || "—"}<br />{o.profiles?.email}
+                      {o.ship_address && (
+                        <>
+                          <br />{o.ship_phone}
+                          <br />{o.ship_address}, {o.ship_city}, {o.ship_province} {o.ship_postal}
+                        </>
+                      )}
+                    </td>
                     <td>{o.order_items.map((i) => `${i.product_name} × ${i.qty}`).join(", ")}</td>
                     <td className="total">${o.total}</td>
                     <td>
