@@ -10,7 +10,7 @@ const REQUIRE_LOGIN = true;
 
 const MAX_PER_ITEM = 5; // bottles of the same fragrance per order
 const MAX_PER_ORDER = 10; // bottles in total per order
-const STATUS_LABEL = { pending: "Order received", paid: "Paid", shipped: "Shipped", delivered: "Delivered", cancelled: "Cancelled" };
+const STATUS_LABEL = { pending: "Order Received", paid: "Paid", shipped: "Shipped", delivered: "Delivered", cancelled: "Cancelled" };
 
 /* ---------------- Account rules ---------------- */
 // Only these email providers can sign up. Typos and unknown domains are rejected.
@@ -181,35 +181,47 @@ function CrestDataUri() {
   );
 }
 
-const PRODUCTS = [
-  { name: "Noir Royal", badge: "Best seller", notes: "Amber, oud, black pepper", price: 168 },
-  { name: "Velours d'Or", badge: null, notes: "Bergamot, iris, sandalwood", price: 154 },
-  { name: "Ambre Imperial", badge: "Limited", notes: "Vanilla, cedar, saffron", price: 192 },
-  { name: "Soie Blanche", badge: null, notes: "Jasmine, musk, white tea", price: 146 },
-];
+// Public web address of a product photo stored in Supabase Storage (the "products" folder)
+const imageUrl = (path) => (path ? supabase.storage.from("products").getPublicUrl(path).data.publicUrl : null);
 
-// Login-page slideshow (5 slides). When you have the pictures, put the PNGs in the "public/products" folder
-// and set image, for example: image: "/products/noir-royal.png". Until then a placeholder is shown.
-const FEATURED = [
-  ...PRODUCTS.slice(0, 4).map((p) => ({ name: p.name, note: p.notes, price: p.price, image: null })),
-  { name: "New arrival", note: "Coming soon", price: null, image: null },
-].slice(0, 5);
+function ProductCard({ p, onOpen, onAdd }) {
+  const src = imageUrl(p.image_path);
+  return (
+    <div className="plp-card">
+      <div className="plp-card-media plp-photo" onClick={() => onOpen(p)}>
+        {p.badge && <span className="plp-card-badge">{p.badge}</span>}
+        {src ? <img src={src} alt={p.name} loading="lazy" /> : <BottleSVG />}
+      </div>
+      <div className="plp-card-body">
+        <div className="plp-card-cat">{p.category || "Eau de Parfum"} · 50ml</div>
+        <div className="plp-card-name" onClick={() => onOpen(p)}>{p.name}</div>
+        <div className="plp-card-note">{p.notes}</div>
+        <div className="plp-card-foot">
+          <span className="plp-price">${p.price}</span>
+          <button className="plp-add" onClick={() => onAdd(p.name, p.price)}>Add to bag</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function FeaturedSlideshow({ items, crest }) {
   const [i, setI] = useState(0);
   const [paused, setPaused] = useState(false);
   useEffect(() => {
-    if (paused) return;
+    if (paused || !items.length) return;
     if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const t = setInterval(() => setI((n) => (n + 1) % items.length), 4000);
     return () => clearInterval(t);
   }, [paused, items.length]);
+  if (!items.length) return null;
+  const cur = i % items.length;
   return (
     <div className="plp-show" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
       <div className="plp-show-label">Featured fragrances</div>
       <div className="plp-show-stage">
         {items.map((p, n) => (
-          <div key={p.name} className={"plp-slide" + (n === i ? " on" : "")}>
+          <div key={p.name} className={"plp-slide" + (n === cur ? " on" : "")}>
             <div className="plp-slide-art">
               {p.image ? (
                 <img src={p.image} alt={p.name} />
@@ -230,7 +242,7 @@ function FeaturedSlideshow({ items, crest }) {
       </div>
       <div className="plp-dots">
         {items.map((p, n) => (
-          <button key={p.name} aria-label={"Show " + p.name} className={n === i ? "on" : ""} onClick={() => setI(n)} />
+          <button key={p.name} aria-label={"Show " + p.name} className={n === cur ? "on" : ""} onClick={() => setI(n)} />
         ))}
       </div>
     </div>
@@ -328,6 +340,33 @@ export default function PrestigeLeParfum() {
     if (gated && openModalId === null) setOpenModalId("signin");
   }, [gated, openModalId]);
 
+  /* ---------------- Products come from the database (admins edit them on /admin) ---------------- */
+  const [products, setProducts] = useState([]);
+  const [productsState, setProductsState] = useState("loading"); // loading | ready | error
+  const [selected, setSelected] = useState(null); // product shown in the detail popup
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("All");
+  const [sort, setSort] = useState("featured");
+  const [visible, setVisible] = useState(12);
+  const loadProducts = async () => {
+    setProductsState("loading");
+    const { data, error } = await supabase
+      .from("products")
+      .select("id, name, category, price, badge, notes, description, image_path, featured, sort_order")
+      .order("sort_order", { ascending: true })
+      .order("name", { ascending: true });
+    if (error) return setProductsState("error");
+    setProducts(data || []);
+    setProductsState("ready");
+  };
+  useEffect(() => {
+    loadProducts();
+  }, []);
+  const openProduct = (p) => {
+    setSelected(p);
+    setOpenModalId("product");
+  };
+
   useEffect(() => {
     if (cooldown <= 0) return;
     const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
@@ -372,6 +411,7 @@ export default function PrestigeLeParfum() {
   const sectionRefs = {
     top: useRef(null),
     productsSection: useRef(null),
+    collectionSection: useRef(null),
     storySection: useRef(null),
     blogSection: useRef(null),
   };
@@ -792,6 +832,19 @@ export default function PrestigeLeParfum() {
   };
 
   const crest = CrestDataUri();
+  const featuredList = (products.some((p) => p.featured) ? products.filter((p) => p.featured) : products).slice(0, 8);
+  const slides = featuredList.slice(0, 5).map((p) => ({ name: p.name, note: p.notes, price: p.price, image: imageUrl(p.image_path) }));
+  const categories = ["All", ...Array.from(new Set(products.map((p) => p.category).filter(Boolean))).sort()];
+  const searchText = search.trim().toLowerCase();
+  const filtered = products
+    .filter(
+      (p) =>
+        (category === "All" || p.category === category) &&
+        (!searchText || [p.name, p.notes, p.category].some((t) => (t || "").toLowerCase().includes(searchText)))
+    )
+    .sort((a, b) =>
+      sort === "low" ? a.price - b.price : sort === "high" ? b.price - a.price : sort === "az" ? a.name.localeCompare(b.name) : 0
+    );
 
   // Shown for a moment while an admin is being sent to /admin (all hooks are above this line)
   if (role === "admin") {
@@ -816,7 +869,7 @@ export default function PrestigeLeParfum() {
           <img className="plp-gate-logo" src={crest} alt="Prestige Le Parfum crest" />
           <h1 className="plp-gate-title">Prestige<br />Le Parfum</h1>
           <p className="plp-gate-tag">Rare ingredients, hand-finished bottles.</p>
-          <FeaturedSlideshow items={FEATURED} crest={crest} />
+          <FeaturedSlideshow items={slides} crest={crest} />
         </div>
       )}
       <style>{`
@@ -1082,6 +1135,16 @@ export default function PrestigeLeParfum() {
           .plp-grid::-webkit-scrollbar,.plp-blog-grid::-webkit-scrollbar{display:none;}
           .plp-grid > *,.plp-blog-grid > *{flex:0 0 78%; scroll-snap-align:start;}
           .plp-card-media{height:200px;}
+          .plp-card-media.plp-photo{height:auto;}
+          /* the full collection is a 2-column grid on phones; chips swipe sideways */
+          .plp-catalog{grid-template-columns:repeat(2,1fr); gap:12px;}
+          .plp-catalog .plp-card-body{padding:12px;}
+          .plp-catalog .plp-card-foot{flex-direction:column; align-items:stretch; gap:8px;}
+          .plp-catalog .plp-card-name{font-size:18px;}
+          .plp-catalog .plp-card-note{display:none;}
+          .plp-chips{flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; margin-left:-20px; margin-right:-20px; padding:0 20px 6px;}
+          .plp-chips::-webkit-scrollbar{display:none;}
+          .plp-chip{flex:0 0 auto;}
           .plp-split-text{padding:44px 24px;}
           .plp-split-text h2{font-size:28px;}
           .plp-news{padding:56px 20px;}
@@ -1138,6 +1201,40 @@ export default function PrestigeLeParfum() {
         .plp-hint{font-size:12px; color:var(--stone); margin:-6px 0 18px;}
         .plp-field input.plp-code{text-align:center; letter-spacing:0.5em; font-size:22px;}
         .plp-btn:disabled{opacity:.6; cursor:wait;}
+
+        /* PRODUCT PHOTOS (white background photos sit on a clean white panel) */
+        .plp-card-media.plp-photo{background:#fff; height:auto; aspect-ratio:3/4; cursor:pointer; display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative;}
+        .plp-photo img{width:100%; height:100%; object-fit:contain; padding:12px; box-sizing:border-box; transition:transform .5s;}
+        .plp-card:hover .plp-photo img{transform:scale(1.05);}
+        .plp-card-name{cursor:pointer;}
+        .plp-state{color:var(--cream-dim); font-size:14px; padding:10px 0 24px;}
+        .plp-state a{color:var(--gold-soft); cursor:pointer; text-decoration:underline;}
+        .plp-count{font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:var(--stone);}
+        .plp-toolbar{display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px;}
+        .plp-search,.plp-sort{background:rgba(255,255,255,0.03); border:1px solid var(--gold-line); color:var(--cream); font-family:'Jost',sans-serif;
+          font-size:14px; padding:12px 14px; outline:none;}
+        .plp-search{flex:1; min-width:220px;}
+        .plp-sort option{background:#121210;}
+        .plp-search:focus,.plp-sort:focus{border-color:var(--gold);}
+        .plp-chips{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:28px;}
+        .plp-chip{background:none; border:1px solid var(--gold-line); color:var(--cream-dim); font-family:'Jost',sans-serif; font-size:11px;
+          letter-spacing:0.16em; text-transform:uppercase; padding:9px 16px; cursor:pointer;}
+        .plp-chip:hover{border-color:var(--gold);}
+        .plp-chip.on{border-color:var(--gold); color:var(--gold-soft);}
+        .plp-catalog{display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:24px; max-width:1180px; margin:0 auto;}
+        .plp-more{display:block; margin:36px auto 0; background:none; border:1px solid var(--gold); color:var(--gold-soft); font-family:'Jost',sans-serif;
+          font-size:12px; letter-spacing:0.2em; text-transform:uppercase; padding:14px 34px; cursor:pointer;}
+        .plp-more:hover{background:var(--gold); color:#121210;}
+        .plp-modal-wide{max-width:780px; width:92vw;}
+        .plp-pd{display:grid; grid-template-columns:1fr 1fr; gap:28px; align-items:center;}
+        .plp-pd-img{background:#fff; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; overflow:hidden;}
+        .plp-pd-img img{width:100%; height:100%; object-fit:contain; padding:14px; box-sizing:border-box;}
+        .plp-pd h3{font-family:'Cormorant Garamond',serif; font-weight:500; font-size:34px; margin:6px 0 10px;}
+        .plp-pd-price{font-family:'Cormorant Garamond',serif; font-size:28px; color:var(--gold-soft); margin-bottom:14px;}
+        .plp-pd-notes{font-size:13px; color:var(--cream-dim); margin:0 0 10px;}
+        .plp-pd-notes span{font-size:10px; letter-spacing:0.2em; text-transform:uppercase; color:var(--stone); margin-right:6px;}
+        .plp-pd-text{font-size:14px; line-height:1.7; color:var(--cream-dim); margin:0 0 22px;}
+        @media (max-width:700px){ .plp-pd{grid-template-columns:1fr;} .plp-pd-img{max-height:300px; aspect-ratio:auto; height:300px;} }
         .plp-two{display:grid; grid-template-columns:1fr 1fr; gap:0 12px;}
         @media (max-width:600px){ .plp-two{grid-template-columns:1fr;} }
         .plp-fieldmsg{font-size:12px; margin-top:6px;}
@@ -1387,6 +1484,29 @@ export default function PrestigeLeParfum() {
         </div>
       )}
 
+      {openModalId === "product" && selected && (
+        <div className="plp-overlay" {...overlayProps}>
+          <div className="plp-modal plp-modal-wide">
+            <button className="plp-modal-close" onClick={closeModal}>&times;</button>
+            <div className="plp-pd">
+              <div className="plp-pd-img">
+                {imageUrl(selected.image_path) ? <img src={imageUrl(selected.image_path)} alt={selected.name} /> : <BottleSVG />}
+              </div>
+              <div>
+                <div className="plp-card-cat">{selected.category || "Eau de Parfum"} · 50ml</div>
+                <h3>{selected.name}</h3>
+                <div className="plp-pd-price">${selected.price}</div>
+                {selected.notes && <p className="plp-pd-notes"><span>Notes</span> {selected.notes}</p>}
+                <p className="plp-pd-text">{selected.description || "An eau de parfum from our collection, available in 50ml."}</p>
+                <button className="plp-btn" style={{ width: "100%" }} onClick={() => addToCart(selected.name, selected.price)}>
+                  Add to bag
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {openModalId === "tracking" && (
         <div className="plp-overlay" {...overlayProps}>
           <div className="plp-modal">
@@ -1474,7 +1594,7 @@ export default function PrestigeLeParfum() {
           </div>
           <div className={"plp-nav-links" + (menuOpen ? " open" : "")} onClick={() => setMenuOpen(false)}>
             <a onClick={() => scrollToSection("top")}>Home</a>
-            <a onClick={() => scrollToSection("productsSection")}>Products</a>
+            <a onClick={() => scrollToSection("collectionSection")}>Products</a>
             <a onClick={() => scrollToSection("storySection")}>Collections</a>
             <a onClick={() => scrollToSection("blogSection")}>Blog</a>
             <a onClick={() => openModal("tracking")}>Order Tracking</a>
@@ -1510,7 +1630,7 @@ export default function PrestigeLeParfum() {
             <h1>Wear a scent<br />worthy of <em>a crown</em></h1>
             <p>Rare ingredients, hand-finished bottles, and fragrances composed for those who don't follow trends. Discover the house of Prestige Le Parfum.</p>
             <div className="plp-btn-row">
-              <a className="plp-btn" onClick={() => scrollToSection("productsSection")}>Shop the collection</a>
+              <a className="plp-btn" onClick={() => scrollToSection("collectionSection")}>Shop the collection</a>
               <a className="plp-btn-ghost" onClick={() => scrollToSection("storySection")}>Our story</a>
             </div>
           </div>
@@ -1531,42 +1651,73 @@ export default function PrestigeLeParfum() {
         </div>
       </div>
 
-      {/* ---------- Products ---------- */}
+      {/* ---------- Featured ---------- */}
       <section className="plp-section" ref={sectionRefs.productsSection}>
         <div className="plp-section-head">
           <div>
             <div className="eyebrow">Best sellers</div>
             <h2>Signature edition</h2>
           </div>
-          <a
-            className="plp-view-all"
-            onClick={() =>
-              showInfo("Coming soon", "The full collection is on its way. Check back soon.")
-            }
-          >
+          <a className="plp-view-all" onClick={() => scrollToSection("collectionSection")}>
             View all products
           </a>
         </div>
-
+        {productsState === "loading" && <p className="plp-state">Loading the collection…</p>}
+        {productsState === "error" && (
+          <p className="plp-state">
+            We couldn&apos;t load the collection. <a onClick={loadProducts}>Try again</a>
+          </p>
+        )}
         <div className="plp-grid">
-          {PRODUCTS.map((p) => (
-            <div className="plp-card" key={p.name}>
-              <div className="plp-card-media">
-                {p.badge && <span className="plp-card-badge">{p.badge}</span>}
-                <BottleSVG />
-              </div>
-              <div className="plp-card-body">
-                <div className="plp-card-cat">Eau de Parfum · 50ml</div>
-                <div className="plp-card-name">{p.name}</div>
-                <div className="plp-card-note">{p.notes}</div>
-                <div className="plp-card-foot">
-                  <span className="plp-price">${p.price}</span>
-                  <button className="plp-add" onClick={() => addToCart(p.name, p.price)}>Add to bag</button>
-                </div>
-              </div>
-            </div>
+          {featuredList.map((p) => (
+            <ProductCard key={p.id} p={p} onOpen={openProduct} onAdd={addToCart} />
           ))}
         </div>
+      </section>
+
+      {/* ---------- Full collection ---------- */}
+      <section className="plp-section" ref={sectionRefs.collectionSection}>
+        <div className="plp-section-head">
+          <div>
+            <div className="eyebrow">The full range</div>
+            <h2>The collection</h2>
+          </div>
+          <span className="plp-count">{filtered.length} fragrance{filtered.length === 1 ? "" : "s"}</span>
+        </div>
+        <div className="plp-toolbar">
+          <input
+            className="plp-search"
+            type="search"
+            placeholder="Search by name, scent or category"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setVisible(12); }}
+          />
+          <select className="plp-sort" value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option value="featured">Featured</option>
+            <option value="low">Price: Low to High</option>
+            <option value="high">Price: High to Low</option>
+            <option value="az">Name: A to Z</option>
+          </select>
+        </div>
+        <div className="plp-chips">
+          {categories.map((c) => (
+            <button key={c} className={"plp-chip" + (c === category ? " on" : "")} onClick={() => { setCategory(c); setVisible(12); }}>
+              {c}
+            </button>
+          ))}
+        </div>
+        {filtered.length === 0 && productsState === "ready" ? (
+          <p className="plp-state">No fragrances match your search.</p>
+        ) : (
+          <div className="plp-catalog">
+            {filtered.slice(0, visible).map((p) => (
+              <ProductCard key={p.id} p={p} onOpen={openProduct} onAdd={addToCart} />
+            ))}
+          </div>
+        )}
+        {filtered.length > visible && (
+          <button className="plp-more" onClick={() => setVisible((v) => v + 12)}>Show more</button>
+        )}
       </section>
 
       {/* ---------- Story split ---------- */}
@@ -1653,7 +1804,7 @@ export default function PrestigeLeParfum() {
           </div>
           <div className="plp-foot-col">
             <h4>Shop</h4>
-            <a onClick={() => scrollToSection("productsSection")}>All products</a>
+            <a onClick={() => scrollToSection("collectionSection")}>All products</a>
             <a onClick={() => scrollToSection("productsSection")}>Best sellers</a>
             <a onClick={() => showInfo("Coming soon", "New arrivals will appear here as they launch.")}>New arrivals</a>
             <a onClick={() => showInfo("Coming soon", "Gift sets are being curated. Check back soon.")}>Gift sets</a>
